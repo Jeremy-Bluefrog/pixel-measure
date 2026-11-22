@@ -1,69 +1,61 @@
-# 相機 AR 測量儀 (Pixel Measure) 
+# Pixel Measure (Google Pixel 專用高效能 AR 空間測量與螢幕尺規)
 
 [![Platform](https://img.shields.io/badge/Platform-Android-green.svg)](https://developer.android.com)
 [![Kotlin](https://img.shields.io/badge/Kotlin-2.0+-purple.svg)](https://kotlinlang.org)
-[![Compose](https://img.shields.io/badge/Jetpack-Compose%20M3-4285F4.svg)](https://developer.android.com/jetpack/compose)
-[![ARCore](https://img.shields.io/badge/AR-Google%20ARCore%20%2B%20CameraX-orange.svg)](https://developers.google.com/ar)
-[![Gemini](https://img.shields.io/badge/AI-Gemini%20Vision-blue.svg)](https://ai.google.dev)
+[![Compose](https://img.shields.io/badge/Jetpack-Compose%20M3%20Expressive-4285F4.svg)](https://developer.android.com/jetpack/compose)
+[![Vulkan](https://img.shields.io/badge/Graphics-Vulkan%201.4-red.svg)](https://developer.android.com/games/vulkan)
+[![ARCore](https://img.shields.io/badge/AR-Google%20ARCore%20%2B%20Camera2-orange.svg)](https://developers.google.com/ar)
 
-基於 **Google ARCore**、**CameraX (60Hz)** 與 **Gemini AI** 打造的高精度空間測量與磁磚辨識 Android 應用程式。具備雙模架構、6DoF 空間追蹤、即時感測器融合校正與材料損耗估算功能。
-
----
-
-## 🌟 核心特色功能
-
-### 1. 🚀 60Hz 超流暢相機預覽 (High-Refresh Camera Mode)
-- **硬體直出零拷貝**：採用 `PreviewView.ImplementationMode.PERFORMANCE` (SurfaceView)，直通 Android 硬體合成器 (SurfaceFlinger)。
-- **Camera2Interop 幀率鎖定**：透過 `CONTROL_AE_TARGET_FPS_RANGE` 設定 `Range(60, 60)`，提供極致流暢、低延遲的測量取景體驗。
-- **雙模相容機制**：具備 ARCore 60 FPS 模式與 CameraX 備援模式，無 Google Play 服務也能穩定流暢運作。
-
-### 2. 🤖 Gemini AI 智慧磁磚偵測與 3D 空間自動跟蹤
-- **視覺辨識磁磚與邊界**：結合 Gemini 多模態視覺分析，自動圈定地板與牆面磁磚。
-- **Gemini 懸浮智慧膠囊 (Floating Intelligence Pill)**：
-  - 經典 AI 四芒星（✦）霓虹漸層呼吸光暈。
-  - 即時顯示磁磚材質與規格（如 `60×60 cm · 拋光石英磚`）。
-- **動態流光光圈 (Organic Glowing Lasso)**：在磁磚輪廓周圍繪製柔和外發光與流動光弧線，搭配 4 角觸覺定位標記。
-- **6DoF 空間投影追蹤**：相機移動旋轉時，AI 膠囊與光圈精確錨定在物理磁磚上，支援「一觸即測」自動計算面積與周長。
-
-### 3. 📐 專業級多模態空間量測
-- **點對點距離**：毫米級 3D 空間距離精確測量。
-- **連續折線周長**：支援多點連續追蹤與即時累計長度。
-- **多邊形面積**：自動投影至平面並計算平方公尺 ($m^2$) 與坪數。
-- **3D 立體體積**：長寬高三維立方體體積運算 ($m^3$)。
-- **直角三角測高 (Clinometer)**：透過傾角與基底距離自動計算建築或家具高度。
-- **多軸水平儀與微米尺規**：高精確度螢幕實體刻度尺，支援公制 ($mm/cm$) 與英制 ($inch$)。
-
-### 4. 🛰️ 多感應器硬體融合校正 (Sensor Fusion Engine)
-- **雙軸陀螺儀水平防手震** (`Rotation Vector`)。
-- **三軸加速度計抖動濾除** (`EMA Jitter Filter`)。
-- **近接感測器接觸檢測** (`Proximity Distance`)。
-- **氣壓高度計垂直校驗** (`Barometer Altimeter`)。
-
-### 5. 🧱 磁磚鋪設施工備料與損耗計算
-- 支援一鍵帶入測量面積，自訂磁磚規格 ($30\times30$, $60\times60$, $80\times80$, $60\times120$ cm 等)。
-- 支援施工損耗率調整 ($3\% \sim 15\%$)，即時計算所需磁磚片數、總箱數與預估預算。
-
-### 6. 💾 本地 Room 資料庫與圖表記錄
-- 完整紀錄每次測量時間、模式、點位座標與材料備註。
-- 支援截圖分享、CSV 匯出與歷史趨勢檢視。
+專為 **Google Pixel** 與 **Vulkan 1.4** 高效能硬體加速打造的頂級空間測量與日常尺規 Android 應用程式。結合 **Material 3 Expressive** 設計系統、智慧空間平面偵測、多軸感測器融合與原生系統轉場動畫，提供毫秒級零延遲、極致穩定流暢的專業量測體驗。
 
 ---
 
-## 🛠️ 技術架構與模組
+## 🌟 核心特色與亮點
+
+### 1. 🚀 Vulkan 1.4 與 Google Pixel 高效能 AR 渲染
+- **Vulkan 1.4 繪圖管線**：透過 `VulkanArGraphicsPipeline` 實現硬體加速 3D 空間網格投影與點雲渲染，解鎖 60Hz/120Hz LTPO 螢幕自适应流暢更新。
+- **Camera2 共享相機 (SharedCamera)**：ARCore 與高速 Camera2 零拷貝管線無縫交接，確保取景畫面清晰低延遲。
+- **Pixel 續航與散熱調優**：整合 `PixelPerformanceMonitor` 動態熱平衡與效能模式。
+
+### 2. ✨ Material 3 Expressive 頂級互動介面
+- **動態色彩 (Dynamic Color)**：全面支援 Android 12+ Material You 動態色彩，涵蓋引導膠囊、警示橫幅、對話框與導覽按鈕。
+- **Expressive 複合元件**：
+  - **分割按鈕 (ExpressiveSplitButton)** 與 **連結式動作群組**（手電筒亮度調節、歷史紀錄、設定）。
+  - **48dp+ 觸控目標標準**：確保所有互動元件符合 Google 無障礙存取規範。
+  - **懸浮藥丸導覽與折疊屏支援**：完美適應手機、摺疊機（Tabletop / Book 姿態）與平板（List-Detail 雙欄工作區）。
+
+### 3. 📐 專業級多模態空間與日常測量
+- **智慧自動偵測 (Auto-Detect)**：自動識別點對點距離、折線、多邊形面積、3D 圓形直徑與垂直高度。
+- **3D 立體體積與角度量測**：支援長寬高三維立方體體積運算與三點夾角測量。
+- **雙線卡尺與實體螢幕直尺**：高精確度螢幕刻度尺，支援字體縮放、實機尺寸校正、公制 ($mm/cm$) 與英制 ($inch$) 切換。
+
+### 4. 🛡️ 極致穩定性架構與系統原生轉場
+- **Activity 架構解耦**：將設定頁面升格為獨立原生 `SettingsActivity`，由 Android 系統原生接管頁面打開與返回動畫（支援 Predictive Back 預測性返回）。
+- **純粹淡入淡出轉場**：AR 模式與螢幕尺規切換採用乾淨利落的 `fadeIn` / `fadeOut` 動畫。
+- **執行緒安全生命週期管理**：完美消除 ARCore 與 Camera2 銷毀競態條件，從設定頁面返回時相機永不凍結。
+
+### 5. 💾 本地持久化與完整歷史管理
+- 支援測量紀錄分類篩選、影片快照預覽、備註編輯、CSV 報表匯出與分享。
+
+---
+
+## 🛠️ 專案架構與模組
 
 ```
 app/src/main/java/com/example/
 ├── logic/
-│   ├── ai/                # Gemini 磁磚視覺分析與本地幾何識別 (AiTileDetector.kt)
-│   ├── ar/                # ARCore 空間引擎、OpenGL 著色器與空間投影數學 (ArMath.kt, ModernArEngine.kt)
-│   └── sensor/            # 空間感測器融合、水平儀、抖動過濾演算法 (SensorCorrectionEngine.kt)
+│   ├── ar/                # ARCore 引擎、空間追蹤與幾何投影數學 (ModernArEngine.kt)
+│   ├── camera/            # 高速 Camera2 管理器與錄影編碼 (HighSpeedCamera2Manager.kt)
+│   ├── vulkan/            # Vulkan 1.4 繪圖管線與效能監控 (VulkanArGraphicsPipeline.kt)
+│   └── sensor/            # 空間感測器融合與抖動過濾 (SensorCorrectionEngine.kt)
 ├── ui/
-│   ├── components/        # AR 鏡頭預覽、Gemini 懸浮膠囊、流光光圈、尺規 (ModernArCameraView.kt, RulerComponent.kt)
-│   ├── theme/             # Material Design 3 色彩系統與排版 (Theme.kt)
-│   └── viewmodel/         # 測量狀態管理與響應式資料流 (MeasureViewModel.kt)
+│   ├── adaptive/          # 摺疊屏、平板 Window Size Class 與機軸追蹤
+│   ├── components/        # M3 Expressive 複合按鈕、頂欄、導覽列、尺規組件
+│   ├── screens/           # 主畫面、設定頁、歷史紀錄與歡迎導覽
+│   └── theme/             # Material 3 Expressive 色彩、字型 (GoogleSansRounded)
 ├── data/
-│   └── db/                # Room 本地持久化資料庫 (MeasureHistoryDao.kt, AppDatabase.kt)
-└── MainActivity.kt        # 應用程式入口與權限請求管理
+│   └── db/                # Room 本地持久化資料庫與資料實體
+└── MainActivity.kt        # 應用程式入口與重新整理頻率校準
 ```
 
 ---
@@ -71,4 +63,3 @@ app/src/main/java/com/example/
 ## 📄 授權條款
 
 本專案採用 [MIT License](LICENSE) 開源授權。
-
