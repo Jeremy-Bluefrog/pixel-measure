@@ -78,13 +78,11 @@ fun MainScreen(viewModel: MeasureViewModel) {
 
     val openSettingsActivity: () -> Unit = remember(context) {
         {
-            val hostActivity = context.findHostActivity()
-            val intent = Intent(context, com.example.SettingsActivity::class.java).apply {
-                if (hostActivity == null) {
-                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                }
+            val appCtx = context.applicationContext ?: context
+            val intent = Intent(appCtx, com.example.SettingsActivity::class.java).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             }
-            (hostActivity ?: context).startActivity(intent)
+            appCtx.startActivity(intent)
         }
     }
 

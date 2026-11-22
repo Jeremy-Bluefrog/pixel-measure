@@ -1,6 +1,6 @@
 {
   "name": "Measure",
-  "description": "多功能即時相機測量與螢幕尺規工具，採用 Material 3 設計",
+  "description": "專為 Google Pixel 與 Vulkan 1.4 高效能 AR 打造的頂級空間測量與螢幕尺規工具。結合 Material 3 Expressive 介面與智慧空間平面偵測，提供高精度的距離、面積、體積、3D 圓形直徑、垂直高度與雙線卡尺量測，並支援即時錄影快照與資料匯出。",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

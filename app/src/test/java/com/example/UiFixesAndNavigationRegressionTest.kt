@@ -350,6 +350,7 @@ class UiFixesAndNavigationRegressionTest {
             .commit()
 
         val vm = vmRule.create(app)
+        vm.dismissWelcomeScreen(neverShowAgain = true)
 
         composeTestRule.mainClock.autoAdvance = false
         composeTestRule.setContent {
@@ -362,12 +363,11 @@ class UiFixesAndNavigationRegressionTest {
 
         // Click Settings -> launches native SettingsActivity via OS Intent instead of in-app overlay
         composeTestRule.onNodeWithTag("top_settings_button").assertIsDisplayed().performClick()
-        composeTestRule.mainClock.advanceTimeBy(200)
+        composeTestRule.waitForIdle()
         Shadows.shadowOf(Looper.getMainLooper()).idle()
 
-        val startedIntent = Shadows.shadowOf(composeTestRule.activity).nextStartedActivity
-            ?: Shadows.shadowOf(app).nextStartedActivity
-            ?: org.robolectric.shadows.ShadowInstrumentation.getInstrumentation().nextStartedActivity
+        val startedIntent = Shadows.shadowOf(app).nextStartedActivity
+            ?: Shadows.shadowOf(composeTestRule.activity).nextStartedActivity
         assertNotNull("Clicking Settings should launch SettingsActivity via Intent", startedIntent)
         assertEquals(SettingsActivity::class.java.name, startedIntent?.component?.className)
 

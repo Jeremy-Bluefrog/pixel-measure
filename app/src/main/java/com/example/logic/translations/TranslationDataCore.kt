@@ -626,7 +626,7 @@ internal object TranslationDataCore {
             "set_tut_replay_btn" to "重播完整歡迎導覽",
             "set_sub_about_title" to "關於 Measure",
             "set_sub_about_sub" to "Google Pixel 原生 AR 空間與日常測量工具",
-            "set_about_desc" to "整合 Google Play Services for AR 空間測距、3D 圓圈擬合與螢幕直尺，提供直覺精準的日常量測體驗。",
+            "set_about_desc" to "專為 Google Pixel 與 Vulkan 1.4 高效能 AR 打造，結合智慧空間平面偵測、3D 圓形擬合、多功能卡尺與高精度螢幕直尺，提供極致流暢且精準的量測體驗。",
             "set_about_feedback_label" to "問題回報與建議信箱",
             "set_about_copied_email_fmt" to "已複製信箱：%s",
             "set_about_copy_email" to "複製信箱",
