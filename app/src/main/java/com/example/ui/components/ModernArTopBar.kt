@@ -138,7 +138,7 @@ fun ModernArTopBar(
                         contentColor = colorOnSurface,
                         accentColor = colorPrimary,
                         borderColor = colorOutlineVariant.copy(alpha = if (isDark) 0.35f else 0.55f),
-                        height = 40.dp,
+                        height = 48.dp,
                         leadingTestTag = "submode_selector_button",
                         trailingTestTag = "submode_dropdown_button"
                     )
@@ -211,7 +211,7 @@ fun ModernArTopBar(
                         border = BorderStroke(0.8.dp, colorOutlineVariant.copy(alpha = if (isDark) 0.35f else 0.55f)),
                         shadowElevation = 0.dp,
                         modifier = Modifier
-                            .heightIn(min = 40.dp)
+                            .heightIn(min = 48.dp)
                             .graphicsLayer {
                                 scaleX = unitScale
                                 scaleY = unitScale
@@ -330,8 +330,7 @@ fun ModernArTopBar(
                         color = torchBg,
                         border = if (isTorchOn) null else BorderStroke(0.8.dp, baseBorder),
                         modifier = Modifier
-                            .minimumInteractiveComponentSize()
-                            .size(42.dp)
+                            .size(48.dp)
                             .graphicsLayer {
                                 scaleX = torchScale
                                 scaleY = torchScale
@@ -504,8 +503,7 @@ fun ModernArTopBar(
                     color = baseSurface,
                     border = BorderStroke(0.8.dp, baseBorder),
                     modifier = Modifier
-                        .minimumInteractiveComponentSize()
-                        .size(42.dp)
+                        .size(48.dp)
                         .graphicsLayer {
                             scaleX = historyScale
                             scaleY = historyScale
@@ -551,8 +549,7 @@ fun ModernArTopBar(
                     color = baseSurface,
                     border = BorderStroke(0.8.dp, baseBorder),
                     modifier = Modifier
-                        .minimumInteractiveComponentSize()
-                        .size(42.dp)
+                        .size(48.dp)
                         .graphicsLayer {
                             scaleX = settingsScale
                             scaleY = settingsScale
@@ -575,10 +572,10 @@ fun ModernArTopBar(
         if (showStatusOrRecHud) {
             if (isRecordingVideo) {
                 Surface(
-                    color = MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.95f),
-                    contentColor = MaterialTheme.colorScheme.onSurface,
+                    color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.94f),
+                    contentColor = MaterialTheme.colorScheme.onErrorContainer,
                     shape = CircleShape,
-                    border = BorderStroke(1.5.dp, Color(0xFFE53935)),
+                    border = BorderStroke(1.5.dp, colorError),
                     shadowElevation = 0.dp
                 ) {
                     Row(
@@ -589,20 +586,20 @@ fun ModernArTopBar(
                         Box(
                             modifier = Modifier
                                 .size(10.dp)
-                                .background(Color(0xFFE53935), CircleShape)
+                                .background(colorError, CircleShape)
                         )
                         val mins = recordingSeconds / 60
                         val secs = recordingSeconds % 60
                         Text(
                             text = String.format(java.util.Locale.US, "REC %02d:%02d", mins, secs),
-                            color = MaterialTheme.colorScheme.onSurface,
+                            color = MaterialTheme.colorScheme.onErrorContainer,
                             fontSize = 14.sp,
                             fontWeight = FontWeight.Bold,
                             fontFamily = FontFamily.Monospace
                         )
                         Text(
                             text = tr("topbar_tap_shutter_stop"),
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            color = MaterialTheme.colorScheme.onErrorContainer.copy(alpha = 0.85f),
                             fontSize = 12.sp,
                             fontWeight = FontWeight.Medium
                         )

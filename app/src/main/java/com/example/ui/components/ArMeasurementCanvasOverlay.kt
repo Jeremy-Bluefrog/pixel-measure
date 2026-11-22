@@ -374,27 +374,9 @@ fun ArMeasurementCanvasOverlay(
         }
     }
 
-    // Reusable Path & primitive caches (Zero per-frame allocations)
+    // Reusable Path & zero-allocation 3D circle/reticle state holder
     val areaCachedPath = remember { Path() }
-    val canvasCirclePath = remember { Path() }
-    val canvasCircleBloomPath = remember { Path() }
-    val canvasCircleBasis = remember { DoubleArray(9) }
-    val canvasCircleScratchX = remember { FloatArray(48) }
-    val canvasCircleScratchY = remember { FloatArray(48) }
-    val reticleBasis = remember { DoubleArray(9) }
-    val reticleOuterX = remember { FloatArray(36) }
-    val reticleOuterY = remember { FloatArray(36) }
-    val reticleInnerX = remember { FloatArray(36) }
-    val reticleInnerY = remember { FloatArray(36) }
-    val reticleOuterPath = remember { Path() }
-    val reticleInnerPath = remember { Path() }
-    val reticleSweepPath = remember { Path() }
-    val reticleSmoothedNormal = remember { floatArrayOf(0f, 1f, 0f) }
-    val hasReticleNormal = remember { booleanArrayOf(false) }
-    val reticleSmoothedRadius = remember { floatArrayOf(-1f) }
-    val smoothedCircleCenter = remember { doubleArrayOf(0.0, 0.0, 0.0) }
-    val smoothedCircleRadius = remember { doubleArrayOf(-1.0) }
-    val hasSmoothedCircle = remember { booleanArrayOf(false) }
+    val circle3dScratch = remember { ArCircle3DRenderScratch() }
     val tempProjHolder = remember { FloatArray(2) }
     val tempProjHolder2 = remember { FloatArray(2) }
     val reticleHolderProj = remember { ScreenPoint() }
@@ -424,7 +406,7 @@ fun ArMeasurementCanvasOverlay(
 
     val circleCompletionPulse = remember { Animatable(0f) }
 
-    // Zero-allocation reusable coordinate buffer pool for 60fps canvas drawing (expanded to 128 elements)
+    // Zero-allocation reusable coordinate buffer pool for 60/120fps canvas drawing (expanded to 128 elements)
     val projectedPool = remember { ProjectedPointPool(128) }
 
     val isCircleSubMode = subMode == 4
@@ -438,16 +420,14 @@ fun ArMeasurementCanvasOverlay(
             )
         } else if (!isCircleSubMode || capturedPoints.isEmpty()) {
             circleCompletionPulse.snapTo(0f)
-            hasSmoothedCircle[0] = false
-            smoothedCircleRadius[0] = -1.0
+            circle3dScratch.resetCircleTracking()
         }
     }
 
     // Reset cached circle/normal smoothing on measurement clear
     LaunchedEffect(capturedPoints.size) {
         if (capturedPoints.isEmpty()) {
-            hasSmoothedCircle[0] = false
-            smoothedCircleRadius[0] = -1.0
+            circle3dScratch.resetCircleTracking()
         }
     }
 
@@ -481,16 +461,40 @@ fun ArMeasurementCanvasOverlay(
         val screenH = size.height.toInt()
         val screenCenter = Offset(size.width / 2f, size.height / 2f)
 
+        val frameDtSec = circle3dScratch.stepDtSec()
+
         val hasValidMatrices = viewMatrix.size >= 16 && projectionMatrix.size >= 16 &&
             ArMath.isMatrixValid(viewMatrix) && ArMath.isMatrixValid(projectionMatrix)
 
-        // Project live 3D target point directly with current frame matrices so rubber-band line,
-        // 3D reticle ring, and crosshair dot remain 1:1 pixel-aligned with zero 2D EMA trailing lag.
-        val currentReticlePos = if (liveTargetPoint != null && hasValidMatrices) {
+        // Smooth live 3D target in world space with dt-aware 1€ Filter for 60/120Hz fluidity,
+        // then project with current frame view/projection matrices for zero 2D panning lag.
+        var hasSmoothedTarget3D = false
+        var smoothedTargetX = 0.0
+        var smoothedTargetY = 0.0
+        var smoothedTargetZ = 0.0
+        if (liveTargetPoint != null && hasValidMatrices) {
+            if (circle3dScratch.reticlePosFilter.filterInto(
+                    liveTargetPoint.x,
+                    liveTargetPoint.y,
+                    liveTargetPoint.z,
+                    frameDtSec,
+                    circle3dScratch.reticlePosOut
+                )
+            ) {
+                smoothedTargetX = circle3dScratch.reticlePosOut[0]
+                smoothedTargetY = circle3dScratch.reticlePosOut[1]
+                smoothedTargetZ = circle3dScratch.reticlePosOut[2]
+                hasSmoothedTarget3D = true
+            }
+        } else if (liveTargetPoint == null) {
+            circle3dScratch.resetReticleTracking()
+        }
+
+        val currentReticlePos = if (hasSmoothedTarget3D) {
             val ok = ArMath.projectCoordsToScreen(
-                liveTargetPoint.x,
-                liveTargetPoint.y,
-                liveTargetPoint.z,
+                smoothedTargetX,
+                smoothedTargetY,
+                smoothedTargetZ,
                 viewMatrix,
                 projectionMatrix,
                 screenW,
@@ -986,10 +990,14 @@ fun ArMeasurementCanvasOverlay(
         }
 
         // -------------------------------------------------------------
-        // 4. CIRCLE / DIAMETER MODE (SubMode 4 — True 3D Surface-Aligned Perspective Ring + Smooth Preview)
+        // 4. CIRCLE / DIAMETER MODE (SubMode 4 — True 3D Depth Ring + 1€ SLERP Preview)
         // -------------------------------------------------------------
         if (isCircleMode && hasValidMatrices && pointsSnapshot.isNotEmpty()) {
-            val liveTarget = liveTargetPoint
+            val liveTarget = if (hasSmoothedTarget3D) {
+                Point3D(smoothedTargetX, smoothedTargetY, smoothedTargetZ, isArPrecision = true)
+            } else {
+                liveTargetPoint
+            }
             val p0 = pointsSnapshot[0]
             val p1 = if (pointsSnapshot.size >= 2) pointsSnapshot[1] else null
             val p2 = if (pointsSnapshot.size >= 3) pointsSnapshot[2] else null
@@ -1004,159 +1012,88 @@ fun ArMeasurementCanvasOverlay(
             }
 
             if (liveFitCircle != null && liveFitCircle.radius > 0.005) {
-                val targetCx = liveFitCircle.center.x
-                val targetCy = liveFitCircle.center.y
-                val targetCz = liveFitCircle.center.z
-                val targetRadius = liveFitCircle.radius
+                val hasCenter = circle3dScratch.circleCenterFilter.filterInto(
+                    liveFitCircle.center.x,
+                    liveFitCircle.center.y,
+                    liveFitCircle.center.z,
+                    frameDtSec,
+                    circle3dScratch.circleCenterOut
+                )
+                val drawCx = if (hasCenter) circle3dScratch.circleCenterOut[0] else liveFitCircle.center.x
+                val drawCy = if (hasCenter) circle3dScratch.circleCenterOut[1] else liveFitCircle.center.y
+                val drawCz = if (hasCenter) circle3dScratch.circleCenterOut[2] else liveFitCircle.center.z
+                val drawRadius = circle3dScratch.circleRadiusFilter
+                    .filter(liveFitCircle.radius, frameDtSec)
+                    .coerceAtLeast(0.005)
 
-                // Smooth 3D circle center & radius during live preview; snap smoothly when locked (3+ pts)
-                val smoothAlpha = if (p2 != null) 0.45 else 0.24
-                if (!hasSmoothedCircle[0] || smoothedCircleRadius[0] <= 0.0) {
-                    smoothedCircleCenter[0] = targetCx
-                    smoothedCircleCenter[1] = targetCy
-                    smoothedCircleCenter[2] = targetCz
-                    smoothedCircleRadius[0] = targetRadius
-                    hasSmoothedCircle[0] = true
+                val fallbackNorm = if (circle3dScratch.reticleNormalSlerp.isInitialized()) {
+                    circle3dScratch.reticleNormalSlerp.currentNormal
                 } else {
-                    smoothedCircleCenter[0] += (targetCx - smoothedCircleCenter[0]) * smoothAlpha
-                    smoothedCircleCenter[1] += (targetCy - smoothedCircleCenter[1]) * smoothAlpha
-                    smoothedCircleCenter[2] += (targetCz - smoothedCircleCenter[2]) * smoothAlpha
-                    smoothedCircleRadius[0] += (targetRadius - smoothedCircleRadius[0]) * smoothAlpha
+                    liveSurfaceNormal
+                }
+                val hasRawPlane = when {
+                    p1 != null && p2 != null -> ArMath.computePlaneNormal3Points(p0, p1, p2, circle3dScratch.circleBasis)
+                    p1 != null && liveTarget != null -> ArMath.computePlaneNormal3Points(p0, p1, liveTarget, circle3dScratch.circleBasis)
+                    else -> false
+                }
+                val targetNx = if (hasRawPlane) circle3dScratch.circleBasis[0].toFloat() else fallbackNorm.getOrElse(0) { 0f }
+                val targetNy = if (hasRawPlane) circle3dScratch.circleBasis[1].toFloat() else fallbackNorm.getOrElse(1) { 1f }
+                val targetNz = if (hasRawPlane) circle3dScratch.circleBasis[2].toFloat() else fallbackNorm.getOrElse(2) { 0f }
+
+                val slerpOk = circle3dScratch.circleNormalSlerp.update(
+                    targetNx = targetNx,
+                    targetNy = targetNy,
+                    targetNz = targetNz,
+                    dtSec = frameDtSec,
+                    stabilizeHorizontal = true,
+                    outNormal = circle3dScratch.circleNormalScratch
+                )
+                val hasBasis = if (slerpOk) {
+                    ArMath.buildOrthonormalBasis(
+                        circle3dScratch.circleNormalScratch[0].toDouble(),
+                        circle3dScratch.circleNormalScratch[1].toDouble(),
+                        circle3dScratch.circleNormalScratch[2].toDouble(),
+                        circle3dScratch.circleBasis
+                    )
+                } else {
+                    ArMath.buildOrthonormalBasis(targetNx.toDouble(), targetNy.toDouble(), targetNz.toDouble(), circle3dScratch.circleBasis)
                 }
 
-                val drawCx = smoothedCircleCenter[0]
-                val drawCy = smoothedCircleCenter[1]
-                val drawCz = smoothedCircleCenter[2]
-                val drawRadius = smoothedCircleRadius[0]
-
-                val fallbackNorm = if (hasReticleNormal[0]) reticleSmoothedNormal else liveSurfaceNormal
-                val hasBasis = when {
-                    p1 != null && p2 != null -> {
-                        ArMath.computePlaneNormal3Points(p0, p1, p2, canvasCircleBasis) ||
-                            ArMath.buildOrthonormalBasis(fallbackNorm[0].toDouble(), fallbackNorm[1].toDouble(), fallbackNorm[2].toDouble(), canvasCircleBasis)
-                    }
-                    p1 != null && liveTarget != null -> {
-                        ArMath.computePlaneNormal3Points(p0, p1, liveTarget, canvasCircleBasis) ||
-                            ArMath.buildOrthonormalBasis(fallbackNorm[0].toDouble(), fallbackNorm[1].toDouble(), fallbackNorm[2].toDouble(), canvasCircleBasis)
-                    }
-                    else -> ArMath.buildOrthonormalBasis(fallbackNorm[0].toDouble(), fallbackNorm[1].toDouble(), fallbackNorm[2].toDouble(), canvasCircleBasis)
-                }
-
-                if (hasBasis && drawRadius > 0.005) {
-                    val segCount = 48
+                if (hasBasis) {
                     val isComplete = p2 != null
                     val strokePx = effectiveLineThickness.dp.toPx()
-                    val projectedCount = ArMath.projectCircle3DToScreen(
-                        cx = drawCx,
-                        cy = drawCy,
-                        cz = drawCz,
-                        radiusMeters = drawRadius,
-                        basis = canvasCircleBasis,
-                        segments = segCount,
+                    val centerOffset = draw3DMeasuredCircle(
+                        scratch = circle3dScratch,
+                        drawCx = drawCx,
+                        drawCy = drawCy,
+                        drawCz = drawCz,
+                        drawRadius = drawRadius,
+                        isComplete = isComplete,
+                        pulseProgress = circleCompletionPulse.value,
+                        strokePx = strokePx,
+                        dashPhase = currentDashPhase,
+                        dash10_6 = getDash10_6(currentDashPhase),
+                        dash14_10 = getDash14_10(currentDashPhase),
+                        primaryColor = colorPrimary,
+                        tertiaryColor = colorTertiary,
                         viewMatrix = viewMatrix,
                         projectionMatrix = projectionMatrix,
-                        screenWidth = screenW,
-                        screenHeight = screenH,
-                        outScreenX = canvasCircleScratchX,
-                        outScreenY = canvasCircleScratchY,
-                        scratchXY = tempProjHolder,
-                        isHorizontallyMirrored = isHorizontallyMirrored,
-                        phaseOffsetRad = if (isComplete) 0.0 else (currentDashPhase * 0.04).toDouble()
+                        screenW = screenW,
+                        screenH = screenH,
+                        isHorizontallyMirrored = isHorizontallyMirrored
                     )
 
-                    if (projectedCount >= 3) {
-                        canvasCirclePath.reset()
-                        canvasCirclePath.moveTo(canvasCircleScratchX[0], canvasCircleScratchY[0])
-                        for (i in 1 until projectedCount) {
-                            canvasCirclePath.lineTo(canvasCircleScratchX[i], canvasCircleScratchY[i])
-                        }
-                        canvasCirclePath.close()
-
-                        // Subtle 3D completion ripple ring when 3rd point locks
-                        val pulseProgress = circleCompletionPulse.value
-                        if (isComplete && pulseProgress in 0.01f..0.98f) {
-                            val rippleRadius = drawRadius * (1.0 + 0.16 * pulseProgress)
-                            val rippleCount = ArMath.projectCircle3DToScreen(
-                                cx = drawCx,
-                                cy = drawCy,
-                                cz = drawCz,
-                                radiusMeters = rippleRadius,
-                                basis = canvasCircleBasis,
-                                segments = segCount,
-                                viewMatrix = viewMatrix,
-                                projectionMatrix = projectionMatrix,
-                                screenWidth = screenW,
-                                screenHeight = screenH,
-                                outScreenX = canvasCircleScratchX,
-                                outScreenY = canvasCircleScratchY,
-                                scratchXY = tempProjHolder,
-                                isHorizontallyMirrored = isHorizontallyMirrored
-                            )
-                            if (rippleCount >= 3) {
-                                canvasCircleBloomPath.reset()
-                                canvasCircleBloomPath.moveTo(canvasCircleScratchX[0], canvasCircleScratchY[0])
-                                for (i in 1 until rippleCount) {
-                                    canvasCircleBloomPath.lineTo(canvasCircleScratchX[i], canvasCircleScratchY[i])
-                                }
-                                canvasCircleBloomPath.close()
-                                drawPath(
-                                    path = canvasCircleBloomPath,
-                                    color = colorPrimary.copy(alpha = (1f - pulseProgress) * 0.65f),
-                                    style = Stroke(width = (strokePx * (1.6f - 0.6f * pulseProgress)), cap = StrokeCap.Round)
-                                )
-                            }
-                        }
-
-                        // Semi-transparent 3D disc fill
-                        drawPath(
-                            path = canvasCirclePath,
-                            color = colorPrimary.copy(alpha = if (isComplete) 0.18f else 0.11f)
-                        )
-
-                        // Outer 3D stroke (solid when complete, flowing dash during preview)
-                        drawPath(
-                            path = canvasCirclePath,
-                            color = colorPrimary,
-                            style = Stroke(
-                                width = strokePx,
-                                cap = StrokeCap.Round,
-                                pathEffect = if (isComplete) null else getDash14_10(currentDashPhase)
-                            )
-                        )
-
-                        // Project 3D center
-                        val centerProjOk = ArMath.projectCoordsToScreen(drawCx, drawCy, drawCz, viewMatrix, projectionMatrix, screenW, screenH, tempProjHolder, isHorizontallyMirrored)
-                        val centerOffset = if (centerProjOk) Offset(tempProjHolder[0], tempProjHolder[1]) else screenCenter
-
-                        // Orthogonal 3D diameter crossbars along tangent basis (U and V)
-                        val ux = canvasCircleBasis[3]; val uy = canvasCircleBasis[4]; val uz = canvasCircleBasis[5]
-                        val vx = canvasCircleBasis[6]; val vy = canvasCircleBasis[7]; val vz = canvasCircleBasis[8]
-                        if (ArMath.projectCoordsToScreen(drawCx - ux * drawRadius, drawCy - uy * drawRadius, drawCz - uz * drawRadius, viewMatrix, projectionMatrix, screenW, screenH, tempProjHolder, isHorizontallyMirrored) &&
-                            ArMath.projectCoordsToScreen(drawCx + ux * drawRadius, drawCy + uy * drawRadius, drawCz + uz * drawRadius, viewMatrix, projectionMatrix, screenW, screenH, tempProjHolder2, isHorizontallyMirrored)
-                        ) {
+                    if (centerOffset != null) {
+                        // Crisp 3D radius callout arm from center to p0
+                        if (ArMath.projectCoordsToScreen(p0.x, p0.y, p0.z, viewMatrix, projectionMatrix, screenW, screenH, tempProjHolder, isHorizontallyMirrored)) {
                             drawLine(
-                                color = colorPrimary.copy(alpha = 0.42f),
-                                start = Offset(tempProjHolder[0], tempProjHolder[1]),
-                                end = Offset(tempProjHolder2[0], tempProjHolder2[1]),
-                                strokeWidth = 1.4.dp.toPx(),
-                                pathEffect = getDash10_6(currentDashPhase)
+                                color = Color.White.copy(alpha = 0.72f),
+                                start = centerOffset,
+                                end = Offset(tempProjHolder[0], tempProjHolder[1]),
+                                strokeWidth = 1.6.dp.toPx(),
+                                cap = StrokeCap.Round
                             )
                         }
-                        if (ArMath.projectCoordsToScreen(drawCx - vx * drawRadius, drawCy - vy * drawRadius, drawCz - vz * drawRadius, viewMatrix, projectionMatrix, screenW, screenH, tempProjHolder, isHorizontallyMirrored) &&
-                            ArMath.projectCoordsToScreen(drawCx + vx * drawRadius, drawCy + vy * drawRadius, drawCz + vz * drawRadius, viewMatrix, projectionMatrix, screenW, screenH, tempProjHolder2, isHorizontallyMirrored)
-                        ) {
-                            drawLine(
-                                color = colorPrimary.copy(alpha = 0.28f),
-                                start = Offset(tempProjHolder[0], tempProjHolder[1]),
-                                end = Offset(tempProjHolder2[0], tempProjHolder2[1]),
-                                strokeWidth = 1.1.dp.toPx(),
-                                pathEffect = getDash10_6(currentDashPhase)
-                            )
-                        }
-
-                        // Center marker dot
-                        drawCircle(Color.White, center = centerOffset, radius = 3.8.dp.toPx())
-                        drawCircle(colorPrimary, center = centerOffset, radius = 6.dp.toPx(), style = Stroke(width = 1.6.dp.toPx()))
 
                         // Live diameter chord between P0 and P1/liveTarget during preview
                         if (!isComplete) {
@@ -1508,228 +1445,61 @@ fun ArMeasurementCanvasOverlay(
         }
 
         // -------------------------------------------------------------
-        // 9. Active Target HUD Reticle (3D 平面貼合圓圈準心 + 流暢姿態插值 + 四大風格支援)
+        // 9. Active Target HUD Reticle (全風格 3D 平面貼合圓圈 + 1€ SLERP 流暢跟隨 + 景深高光與法線視差)
         // -------------------------------------------------------------
         var drew3DReticle = false
-        if (reticleStyle == "DOUBLE_RING" &&
-            isSurfaceNormalLocked &&
+        if (isSurfaceNormalLocked &&
             hasValidMatrices &&
-            liveTargetPoint != null &&
+            hasSmoothedTarget3D &&
             liveSurfaceNormal.size >= 3
         ) {
-            // Smooth surface normal orientation continuously inside 60fps Canvas loop
-            var tnx = liveSurfaceNormal[0]
-            var tny = liveSurfaceNormal[1]
-            var tnz = liveSurfaceNormal[2]
-            val targetLen = sqrt(tnx * tnx + tny * tny + tnz * tnz)
-            if (targetLen > 1e-4f) {
-                tnx /= targetLen; tny /= targetLen; tnz /= targetLen
-                if (!hasReticleNormal[0]) {
-                    reticleSmoothedNormal[0] = tnx
-                    reticleSmoothedNormal[1] = tny
-                    reticleSmoothedNormal[2] = tnz
-                    hasReticleNormal[0] = true
-                } else {
-                    val cnx = reticleSmoothedNormal[0]
-                    val cny = reticleSmoothedNormal[1]
-                    val cnz = reticleSmoothedNormal[2]
-                    val dot = (cnx * tnx + cny * tny + cnz * tnz).coerceIn(-1f, 1f)
-                    if (dot < 0f) {
-                        tnx = -tnx; tny = -tny; tnz = -tnz
-                    }
-                    val absDot = abs(dot)
-                    val normalLerp = (0.24f + (1f - absDot) * 0.36f).coerceIn(0.24f, 0.56f)
-                    var sx = cnx + (tnx - cnx) * normalLerp
-                    var sy = cny + (tny - cny) * normalLerp
-                    var sz = cnz + (tnz - cnz) * normalLerp
-                    val sLen = sqrt(sx * sx + sy * sy + sz * sz)
-                    if (sLen > 1e-4f) {
-                        reticleSmoothedNormal[0] = sx / sLen
-                        reticleSmoothedNormal[1] = sy / sLen
-                        reticleSmoothedNormal[2] = sz / sLen
-                    }
-                }
-            }
+            val slerpOk = circle3dScratch.reticleNormalSlerp.update(
+                targetNx = liveSurfaceNormal[0],
+                targetNy = liveSurfaceNormal[1],
+                targetNz = liveSurfaceNormal[2],
+                dtSec = frameDtSec,
+                stabilizeHorizontal = true
+            )
 
-            val baseReticleDist = (liveDistanceMeters ?: 1.0).coerceIn(0.25, 6.0)
+            // Scale reticle strictly by true camera-to-surface distance (never jumps after placing Point A)
+            val camDistMeters = ArMath.cameraDistanceToWorldPoint(
+                smoothedTargetX,
+                smoothedTargetY,
+                smoothedTargetZ,
+                viewMatrix
+            ).coerceIn(0.25, 6.0)
             val snapF = snapScaleAnimated.value.coerceIn(0.85f, 1.35f)
             val pulseF = reticlePulseScale.value.coerceIn(0.85f, 1.35f)
-            val targetRadiusM = (baseReticleDist * 0.036 * snapF * pulseF).coerceIn(0.016, 0.22).toFloat()
-            val outerRadiusM = if (reticleSmoothedRadius[0] < 0f) {
-                reticleSmoothedRadius[0] = targetRadiusM
-                targetRadiusM.toDouble()
-            } else {
-                val sr = reticleSmoothedRadius[0] + (targetRadiusM - reticleSmoothedRadius[0]) * 0.28f
-                reticleSmoothedRadius[0] = sr
-                sr.toDouble()
-            }
-            val innerRadiusM = outerRadiusM * 0.56
+            val targetRadiusM = (camDistMeters * 0.036 * snapF * pulseF).coerceIn(0.016, 0.22)
+            val outerRadiusM = circle3dScratch.reticleRadiusFilter
+                .filter(targetRadiusM, frameDtSec)
+                .coerceIn(0.014, 0.24)
 
-            if (ArMath.buildOrthonormalBasis(
-                    reticleSmoothedNormal[0].toDouble(),
-                    reticleSmoothedNormal[1].toDouble(),
-                    reticleSmoothedNormal[2].toDouble(),
-                    reticleBasis
+            val normArr = circle3dScratch.reticleNormalSlerp.currentNormal
+            if (slerpOk && ArMath.buildOrthonormalBasis(
+                    normArr[0].toDouble(),
+                    normArr[1].toDouble(),
+                    normArr[2].toDouble(),
+                    circle3dScratch.reticleBasis
                 )
             ) {
-                val segs = 36
-                val outerCnt = ArMath.projectCircle3DToScreen(
-                    cx = liveTargetPoint.x,
-                    cy = liveTargetPoint.y,
-                    cz = liveTargetPoint.z,
-                    radiusMeters = outerRadiusM,
-                    basis = reticleBasis,
-                    segments = segs,
+                drew3DReticle = draw3DSurfaceReticle(
+                    scratch = circle3dScratch,
+                    centerX = smoothedTargetX,
+                    centerY = smoothedTargetY,
+                    centerZ = smoothedTargetZ,
+                    outerRadiusM = outerRadiusM,
+                    style = reticleStyle,
+                    primaryColor = colorPrimary,
+                    accentColor = colorTertiary,
+                    isSnapped = isSnapped,
+                    dashPhase = currentDashPhase,
                     viewMatrix = viewMatrix,
                     projectionMatrix = projectionMatrix,
-                    screenWidth = screenW,
-                    screenHeight = screenH,
-                    outScreenX = reticleOuterX,
-                    outScreenY = reticleOuterY,
-                    scratchXY = tempProjHolder,
+                    screenW = screenW,
+                    screenH = screenH,
                     isHorizontallyMirrored = isHorizontallyMirrored
                 )
-                val innerCnt = ArMath.projectCircle3DToScreen(
-                    cx = liveTargetPoint.x,
-                    cy = liveTargetPoint.y,
-                    cz = liveTargetPoint.z,
-                    radiusMeters = innerRadiusM,
-                    basis = reticleBasis,
-                    segments = segs,
-                    viewMatrix = viewMatrix,
-                    projectionMatrix = projectionMatrix,
-                    screenWidth = screenW,
-                    screenHeight = screenH,
-                    outScreenX = reticleInnerX,
-                    outScreenY = reticleInnerY,
-                    scratchXY = tempProjHolder,
-                    isHorizontallyMirrored = isHorizontallyMirrored
-                )
-                if (outerCnt >= 3 && innerCnt >= 3) {
-                    val activeReticleColor = if (isSnapped) colorTertiary else colorPrimary
-                    reticleOuterPath.reset()
-                    reticleOuterPath.moveTo(reticleOuterX[0], reticleOuterY[0])
-                    for (i in 1 until outerCnt) {
-                        reticleOuterPath.lineTo(reticleOuterX[i], reticleOuterY[i])
-                    }
-                    reticleOuterPath.close()
-
-                    reticleInnerPath.reset()
-                    reticleInnerPath.moveTo(reticleInnerX[0], reticleInnerY[0])
-                    for (i in 1 until innerCnt) {
-                        reticleInnerPath.lineTo(reticleInnerX[i], reticleInnerY[i])
-                    }
-                    reticleInnerPath.close()
-
-                    // Soft 3D bloom fill & outer magnetic aura
-                    drawPath(
-                        path = reticleOuterPath,
-                        color = activeReticleColor.copy(alpha = if (isSnapped) 0.20f else 0.09f)
-                    )
-                    drawPath(
-                        path = reticleOuterPath,
-                        color = activeReticleColor.copy(alpha = if (isSnapped) 0.40f else 0.20f),
-                        style = Stroke(width = 5.5.dp.toPx(), cap = StrokeCap.Round)
-                    )
-                    drawPath(
-                        path = reticleOuterPath,
-                        color = activeReticleColor,
-                        style = Stroke(width = 2.4.dp.toPx(), cap = StrokeCap.Round)
-                    )
-
-                    // Inner ring
-                    drawPath(
-                        path = reticleInnerPath,
-                        color = activeReticleColor.copy(alpha = if (isSnapped) 0.90f else 0.55f),
-                        style = Stroke(width = 1.5.dp.toPx(), cap = StrokeCap.Round)
-                    )
-
-                    // Smooth rotating 3D tangent-space scan sweep arc (~70 deg)
-                    val sweepSpan = 7
-                    val sweepStepRad = (2.0 * Math.PI) / segs
-                    val sweepPhaseRad = (currentDashPhase * 0.10).toDouble()
-                    val ux = reticleBasis[3]; val uy = reticleBasis[4]; val uz = reticleBasis[5]
-                    val vx = reticleBasis[6]; val vy = reticleBasis[7]; val vz = reticleBasis[8]
-                    val sweepRadiusM = outerRadiusM * 1.14
-                    var sweepValid = true
-                    reticleSweepPath.reset()
-                    for (si in 0..sweepSpan) {
-                        val theta = sweepPhaseRad + si * sweepStepRad
-                        val c = cos(theta) * sweepRadiusM
-                        val s = sin(theta) * sweepRadiusM
-                        val ok = ArMath.projectCoordsToScreen(
-                            liveTargetPoint.x + c * ux + s * vx,
-                            liveTargetPoint.y + c * uy + s * vy,
-                            liveTargetPoint.z + c * uz + s * vz,
-                            viewMatrix, projectionMatrix, screenW, screenH, tempProjHolder, isHorizontallyMirrored
-                        )
-                        if (!ok) {
-                            sweepValid = false
-                            break
-                        }
-                        if (si == 0) reticleSweepPath.moveTo(tempProjHolder[0], tempProjHolder[1])
-                        else reticleSweepPath.lineTo(tempProjHolder[0], tempProjHolder[1])
-                    }
-                    if (sweepValid) {
-                        drawPath(
-                            path = reticleSweepPath,
-                            color = Color.White.copy(alpha = if (isSnapped) 0.92f else 0.65f),
-                            style = Stroke(width = 2.2.dp.toPx(), cap = StrokeCap.Round)
-                        )
-                    }
-
-                    // 4 cardinal 3D (U, V) tangent ticks on the outer plane ring
-                    val tickInnerM = outerRadiusM * 0.88
-                    val tickOuterM = outerRadiusM * 1.12
-                    for (cardinal in 0 until 4) {
-                        val ax = if (cardinal < 2) ux else vx
-                        val ay = if (cardinal < 2) uy else vy
-                        val az = if (cardinal < 2) uz else vz
-                        val sign = if (cardinal % 2 == 0) 1.0 else -1.0
-                        if (ArMath.projectCoordsToScreen(
-                                liveTargetPoint.x + sign * ax * tickInnerM,
-                                liveTargetPoint.y + sign * ay * tickInnerM,
-                                liveTargetPoint.z + sign * az * tickInnerM,
-                                viewMatrix, projectionMatrix, screenW, screenH, tempProjHolder, isHorizontallyMirrored
-                            ) &&
-                            ArMath.projectCoordsToScreen(
-                                liveTargetPoint.x + sign * ax * tickOuterM,
-                                liveTargetPoint.y + sign * ay * tickOuterM,
-                                liveTargetPoint.z + sign * az * tickOuterM,
-                                viewMatrix, projectionMatrix, screenW, screenH, tempProjHolder2, isHorizontallyMirrored
-                            )
-                        ) {
-                            drawLine(
-                                color = activeReticleColor.copy(alpha = 0.85f),
-                                start = Offset(tempProjHolder[0], tempProjHolder[1]),
-                                end = Offset(tempProjHolder2[0], tempProjHolder2[1]),
-                                strokeWidth = 1.8.dp.toPx(),
-                                cap = StrokeCap.Round
-                            )
-                        }
-                    }
-
-                    // Core center anchor dot projected cleanly at 3D hit center
-                    val centerDotPos = if (ArMath.projectCoordsToScreen(
-                            liveTargetPoint.x, liveTargetPoint.y, liveTargetPoint.z,
-                            viewMatrix, projectionMatrix, screenW, screenH, tempProjHolder, isHorizontallyMirrored
-                        )
-                    ) Offset(tempProjHolder[0], tempProjHolder[1]) else currentReticlePos
-
-                    val dotRadius = if (isSnapped) 5.2.dp.toPx() else 4.6.dp.toPx()
-                    drawCircle(
-                        color = activeReticleColor.copy(alpha = 0.80f),
-                        center = centerDotPos,
-                        radius = dotRadius + 1.2.dp.toPx(),
-                        style = Stroke(width = 1.2.dp.toPx())
-                    )
-                    drawCircle(
-                        color = Color.White,
-                        center = centerDotPos,
-                        radius = dotRadius
-                    )
-                    drew3DReticle = true
-                }
             }
         }
         if (!drew3DReticle) {

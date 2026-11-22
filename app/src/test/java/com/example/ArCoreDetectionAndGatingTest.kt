@@ -133,14 +133,19 @@ class ArCoreDetectionAndGatingTest {
     @Test
     fun `ensureInstallReadyOnMainThread reports NEEDS_INSTALLATION when com_google_ar_core is missing`() {
         val app = ApplicationProvider.getApplicationContext<Application>()
-        val activity = Robolectric.buildActivity(Activity::class.java).create().get()
-        val engine = ModernArEngine(app)
+        val controller = Robolectric.buildActivity(Activity::class.java).create()
+        try {
+            val activity = controller.get()
+            val engine = ModernArEngine(app)
 
-        val ready = engine.ensureInstallReadyOnMainThread(activity, explicitUserAction = false)
+            val ready = engine.ensureInstallReadyOnMainThread(activity, explicitUserAction = false)
 
-        assertFalse(ready)
-        assertFalse(engine.isSupported)
-        assertEquals(ArCoreEngineStatus.NEEDS_INSTALLATION, engine.arCoreStatus.value)
+            assertFalse(ready)
+            assertFalse(engine.isSupported)
+            assertEquals(ArCoreEngineStatus.NEEDS_INSTALLATION, engine.arCoreStatus.value)
+        } finally {
+            controller.destroy()
+        }
     }
 
     @Test

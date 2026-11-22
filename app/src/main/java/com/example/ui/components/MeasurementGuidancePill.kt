@@ -86,6 +86,7 @@ fun MeasurementGuidancePill(
         remember { mutableFloatStateOf(1.0f) }
     }
 
+    val cs = MaterialTheme.colorScheme
     val (icon: ImageVector, title: String, subtitle: String, accentColor: Color) = remember(
         planesCount,
         hasCapturedPoints,
@@ -100,7 +101,8 @@ fun MeasurementGuidancePill(
         selectedUnit,
         arCoreStatus,
         arCoreStatusMessage,
-        currentLang
+        currentLang,
+        cs
     ) {
         when {
             arCoreStatus == ArCoreEngineStatus.NEEDS_INSTALLATION -> {
@@ -108,7 +110,7 @@ fun MeasurementGuidancePill(
                     Icons.Rounded.DownloadForOffline,
                     TranslationManager.getString("arcore_need_install_short", currentLang),
                     "com.google.ar.core",
-                    Color(0xFFF59E0B)
+                    cs.tertiary
                 )
             }
             arCoreStatus == ArCoreEngineStatus.UNSUPPORTED || arCoreStatus == ArCoreEngineStatus.ERROR -> {
@@ -116,7 +118,7 @@ fun MeasurementGuidancePill(
                     Icons.Rounded.WarningAmber,
                     arCoreStatusMessage.ifBlank { TranslationManager.getString("arcore_not_ready_short", currentLang) },
                     "",
-                    Color(0xFFEF4444)
+                    cs.error
                 )
             }
             isSnapped -> {
@@ -124,7 +126,7 @@ fun MeasurementGuidancePill(
                     Icons.Rounded.AllInclusive,
                     TranslationManager.getString("guide_snap_title", currentLang),
                     TranslationManager.getString("guide_snap_sub", currentLang),
-                    Color(0xFF38BDF8)
+                    cs.primary
                 )
             }
             isWaitingForSecondPoint -> {
@@ -135,19 +137,19 @@ fun MeasurementGuidancePill(
                         Icons.Rounded.SquareFoot,
                         TranslationManager.formatString("guide_poly_vertex_fmt", currentLang, capturedPointsCount + 1),
                         TranslationManager.formatString("guide_edge_len_fmt", currentLang, distStr),
-                        Color(0xFF10B981)
+                        cs.tertiary
                     )
                     2 -> Quad(
                         Icons.Rounded.Height,
                         TranslationManager.getString("guide_height_up_title", currentLang),
                         TranslationManager.formatString("guide_height_up_sub_fmt", currentLang, distStr),
-                        Color(0xFFF59E0B)
+                        cs.secondary
                     )
                     3 -> Quad(
                         Icons.Rounded.ViewInAr,
                         TranslationManager.getString("guide_box_diag_title", currentLang),
                         TranslationManager.formatString("guide_box_diag_sub_fmt", currentLang, distStr),
-                        Color(0xFF8B5CF6)
+                        cs.tertiary
                     )
                     4 -> {
                         if (capturedPointsCount == 2) {
@@ -155,14 +157,14 @@ fun MeasurementGuidancePill(
                                 Icons.Rounded.Adjust,
                                 TranslationManager.getString("guide_circle_3_title", currentLang),
                                 TranslationManager.formatString("guide_circle_fit_fmt", currentLang, distStr),
-                                Color(0xFF06B6D4)
+                                cs.primary
                             )
                         } else {
                             Quad(
                                 Icons.Rounded.Adjust,
                                 TranslationManager.getString("guide_circle_2_title", currentLang),
                                 TranslationManager.formatString("guide_circle_preview_fmt", currentLang, distStr),
-                                Color(0xFF06B6D4)
+                                cs.primary
                             )
                         }
                     }
@@ -175,14 +177,14 @@ fun MeasurementGuidancePill(
                                 Icons.Rounded.Architecture,
                                 TranslationManager.getString("guide_angle_2_title", currentLang),
                                 TranslationManager.formatString("guide_angle_live_fmt", currentLang, angleStr),
-                                Color(0xFFF59E0B)
+                                cs.secondary
                             )
                         } else {
                             Quad(
                                 Icons.Rounded.Architecture,
                                 TranslationManager.getString("guide_angle_vertex_title", currentLang),
                                 TranslationManager.formatString("guide_angle_edge1_fmt", currentLang, distStr),
-                                Color(0xFFF59E0B)
+                                cs.secondary
                             )
                         }
                     }
@@ -190,7 +192,7 @@ fun MeasurementGuidancePill(
                         Icons.Rounded.Straighten,
                         TranslationManager.getString("guide_end_title", currentLang),
                         TranslationManager.formatString("guide_end_sub_fmt", currentLang, distStr),
-                        Color(0xFF06B6D4)
+                        cs.primary
                     )
                 }
             }
@@ -201,7 +203,7 @@ fun MeasurementGuidancePill(
                     Icons.Rounded.SquareFoot,
                     TranslationManager.formatString("guide_area_done_fmt", currentLang, capturedPointsCount),
                     TranslationManager.formatString("guide_edge_done_fmt", currentLang, distStr),
-                    Color(0xFF10B981)
+                    cs.tertiary
                 )
             }
             subMode == 3 && capturedPointsCount >= 2 && isMeasurementAvailable -> {
@@ -213,7 +215,7 @@ fun MeasurementGuidancePill(
                         currentLang,
                         viewModel.formatVolume(viewModel.calculateBoundingBox().volume, selectedUnit)
                     ),
-                    Color(0xFF10B981)
+                    cs.tertiary
                 )
             }
             subMode == 4 && capturedPointsCount >= 2 && isMeasurementAvailable -> {
@@ -224,14 +226,14 @@ fun MeasurementGuidancePill(
                         Icons.Rounded.Adjust,
                         TranslationManager.getString("guide_circle_done_title", currentLang),
                         TranslationManager.formatString("guide_circle_done_fmt", currentLang, distStr),
-                        Color(0xFF10B981)
+                        cs.tertiary
                     )
                 } else {
                     Quad(
                         Icons.Rounded.Adjust,
                         TranslationManager.getString("guide_circle_3_add_title", currentLang),
                         TranslationManager.formatString("guide_circle_add_sub_fmt", currentLang, distStr),
-                        Color(0xFF06B6D4)
+                        cs.primary
                     )
                 }
             }
@@ -240,7 +242,7 @@ fun MeasurementGuidancePill(
                     Icons.Rounded.Architecture,
                     TranslationManager.getString("guide_angle_done_title", currentLang),
                     TranslationManager.formatString("guide_angle_done_fmt", currentLang, Math.round(viewModel.calculateAngle()).toString()),
-                    Color(0xFF10B981)
+                    cs.tertiary
                 )
             }
             isMeasurementAvailable -> {
@@ -261,7 +263,7 @@ fun MeasurementGuidancePill(
                     Icons.Rounded.Adjust,
                     role,
                     TranslationManager.getString("guide_aim_tap_plus", currentLang),
-                    Color(0xFF3B82F6)
+                    cs.primary
                 )
             }
             else -> {
@@ -269,7 +271,7 @@ fun MeasurementGuidancePill(
                     Icons.Rounded.Radar,
                     TranslationManager.getString("guide_scanning_title", currentLang),
                     TranslationManager.getString("guide_scanning_sub", currentLang),
-                    Color(0xFFA855F7)
+                    cs.secondary
                 )
             }
         }
@@ -297,6 +299,8 @@ fun MeasurementGuidancePill(
         border = BorderStroke(1.dp, animatedAccent.copy(alpha = 0.45f)),
         shadowElevation = 0.dp,
         modifier = modifier
+            .widthIn(max = 360.dp)
+            .heightIn(min = 36.dp)
             .padding(horizontal = 8.dp)
             .graphicsLayer {
                 scaleX = pillScale
@@ -306,9 +310,9 @@ fun MeasurementGuidancePill(
             .testTag("measurement_guidance_pill")
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 7.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             if (isScanningPlanes) {
                 ExpressiveContainedLoadingIndicator(
@@ -341,30 +345,32 @@ fun MeasurementGuidancePill(
                 }
             }
 
-            Text(
-                text = title,
-                fontSize = 12.sp,
-                fontWeight = FontWeight.Bold,
-                color = pillTitleColor,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f, fill = false)
-            )
+            Column(
+                modifier = Modifier.weight(1f, fill = false),
+                verticalArrangement = Arrangement.spacedBy(1.dp)
+            ) {
+                Text(
+                    text = title,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = pillTitleColor,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
 
-            if (subtitle.contains("：") || subtitle.contains(":")) {
-                val valuePart = subtitle.substringAfter("：").substringAfter(":").trim()
-                if (valuePart.isNotEmpty()) {
+                if (subtitle.isNotBlank() && subtitle != title) {
+                    val displaySub = if (subtitle.contains("：") || subtitle.contains(":")) {
+                        subtitle.substringAfter("：").substringAfter(":").trim().ifEmpty { subtitle }
+                    } else {
+                        subtitle
+                    }
                     Text(
-                        text = "•",
-                        fontSize = 11.sp,
-                        color = pillSubtitleColor
-                    )
-                    Text(
-                        text = valuePart,
+                        text = displaySub,
                         style = ExpressiveTypography.labelNumeral,
                         fontSize = 11.sp,
                         color = pillSubtitleColor,
-                        maxLines = 1
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                 }
             }

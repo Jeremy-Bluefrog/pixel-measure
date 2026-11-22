@@ -123,9 +123,6 @@ fun RulerComponent(
     val mmInPxD = ((ydpi.toDouble() / 25.4) * safeFactor.toDouble()).coerceIn(1.5, 50.0)
     val xMmInPxD = ((xdpi.toDouble() / 25.4) * safeFactor.toDouble()).coerceIn(1.5, 50.0)
 
-    // Leaves clean headroom below top centered Edit button & display cutout
-    val zeroY = with(density) { 74.dp.toPx() }
-
     val themePrimary = MaterialTheme.colorScheme.primary
     val themeSurface = MaterialTheme.colorScheme.surface
     val themeBackground = MaterialTheme.colorScheme.background
@@ -219,6 +216,14 @@ fun RulerComponent(
     var lastDetentMm by remember { mutableIntStateOf(-1) }
     var viewportSize by remember { mutableStateOf(IntSize.Zero) }
 
+    val showExtendedHorizontalScale = remember(viewportSize, adaptiveState.isMediumOrExpandedWidth) {
+        val minWidePx = with(density) { 540.dp.toPx() }
+        adaptiveState.isMediumOrExpandedWidth || viewportSize.width >= minWidePx
+    }
+    val cutoutTopDp = WindowInsets.displayCutout.asPaddingValues().calculateTopPadding()
+    // Leaves clean headroom below top centered Edit button, optional horizontal scale & display cutout
+    val zeroY = with(density) { ((if (showExtendedHorizontalScale) 122.dp else 84.dp) + cutoutTopDp).toPx() }
+
     val caliperAccentColor = MaterialTheme.colorScheme.tertiary
     val caliperDashEffect = remember { PathEffect.dashPathEffect(floatArrayOf(14f, 8f), 0f) }
 
@@ -251,10 +256,6 @@ fun RulerComponent(
             val mid = viewportSize.width * 0.5f
             (mid - with(density) { 10.dp.toPx() }) to (mid + with(density) { 10.dp.toPx() })
         }
-    }
-    val showExtendedHorizontalScale = remember(viewportSize, adaptiveState.isMediumOrExpandedWidth) {
-        val minWidePx = with(density) { 540.dp.toPx() }
-        adaptiveState.isMediumOrExpandedWidth || viewportSize.width >= minWidePx
     }
 
     CompositionLocalProvider(LocalAppLanguage provides currentLanguage) {

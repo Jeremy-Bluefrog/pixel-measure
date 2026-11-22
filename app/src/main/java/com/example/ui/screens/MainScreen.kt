@@ -3,6 +3,7 @@ package com.example.ui.screens
 import android.app.Activity
 import android.content.Context
 import android.content.ContextWrapper
+import android.content.Intent
 import androidx.compose.animation.*
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.layout.*
@@ -66,7 +67,6 @@ fun MainScreen(viewModel: MeasureViewModel) {
     val adaptiveState = rememberAdaptiveWindowState()
 
     var showHistorySheet by rememberSaveable { mutableStateOf(false) }
-    var showSettingsDialog by rememberSaveable { mutableStateOf(false) }
     var selectedRecordId by rememberSaveable { mutableStateOf<Int?>(null) }
     val selectedRecordForDetail = remember(selectedRecordId, savedRecords) {
         selectedRecordId?.let { id -> savedRecords.find { it.id == id } }
@@ -76,6 +76,18 @@ fun MainScreen(viewModel: MeasureViewModel) {
     val hostView = LocalView.current
     val keepScreenOn by viewModel.keepScreenOn.collectAsStateWithLifecycle()
 
+    val openSettingsActivity: () -> Unit = remember(context) {
+        {
+            val hostActivity = context.findHostActivity()
+            val intent = Intent(context, com.example.SettingsActivity::class.java).apply {
+                if (hostActivity == null) {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+            }
+            (hostActivity ?: context).startActivity(intent)
+        }
+    }
+
     DisposableEffect(keepScreenOn, hostView) {
         hostView.keepScreenOn = keepScreenOn
         onDispose {
@@ -84,11 +96,11 @@ fun MainScreen(viewModel: MeasureViewModel) {
     }
 
     // Hide system status bar cleanly when using full-screen Screen Ruler mode (currentMode == 1)
-    DisposableEffect(currentMode, showSettingsDialog, showHistorySheet, showWelcomeScreen, hostView) {
+    DisposableEffect(currentMode, showHistorySheet, showWelcomeScreen, hostView) {
         val window = context.findHostActivity()?.window
         val controller = if (window != null) WindowCompat.getInsetsController(window, hostView) else null
         controller?.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-        if (currentMode == 1 && !showSettingsDialog && !showHistorySheet && !showWelcomeScreen) {
+        if (currentMode == 1 && !showHistorySheet && !showWelcomeScreen) {
             controller?.hide(WindowInsetsCompat.Type.statusBars())
         } else {
             controller?.show(WindowInsetsCompat.Type.statusBars())
@@ -111,7 +123,7 @@ fun MainScreen(viewModel: MeasureViewModel) {
     }
     val isObscuredByFullscreenOverlay by remember(adaptiveState.useTwoPaneLayout) {
         derivedStateOf {
-            showWelcomeScreen || showSettingsDialog || (showHistorySheet && adaptiveState.useTwoPaneLayout)
+            showWelcomeScreen || (showHistorySheet && adaptiveState.useTwoPaneLayout)
         }
     }
     val hardwareBlurRadius by animateFloatAsState(
@@ -149,23 +161,18 @@ fun MainScreen(viewModel: MeasureViewModel) {
         selectedRecordId = null
     }
 
-    // 2. Settings Screen (Full page / Two-Pane)
-    androidx.activity.compose.BackHandler(enabled = showSettingsDialog && !isCompactDetailOpen) {
-        showSettingsDialog = false
-    }
-
-    // 3. History Bottom Sheet / Two-Pane Workspace
-    androidx.activity.compose.BackHandler(enabled = showHistorySheet && !showSettingsDialog && !isCompactDetailOpen) {
+    // 2. History Bottom Sheet / Two-Pane Workspace
+    androidx.activity.compose.BackHandler(enabled = showHistorySheet && !isCompactDetailOpen) {
         showHistorySheet = false
     }
 
-    // 4. Welcome Screen (Onboarding overlay)
-    androidx.activity.compose.BackHandler(enabled = showWelcomeScreen && !showHistorySheet && !showSettingsDialog && !isCompactDetailOpen) {
+    // 3. Welcome Screen (Onboarding overlay)
+    androidx.activity.compose.BackHandler(enabled = showWelcomeScreen && !showHistorySheet && !isCompactDetailOpen) {
         viewModel.dismissWelcomeScreen()
     }
 
-    // 5. Secondary mode (Ruler -> return to Camera AR Home)
-    androidx.activity.compose.BackHandler(enabled = currentMode != 0 && !showWelcomeScreen && !showHistorySheet && !showSettingsDialog && !isCompactDetailOpen) {
+    // 4. Secondary mode (Ruler -> return to Camera AR Home)
+    androidx.activity.compose.BackHandler(enabled = currentMode != 0 && !showWelcomeScreen && !showHistorySheet && !isCompactDetailOpen) {
         viewModel.setMode(0)
     }
 
@@ -210,7 +217,7 @@ fun MainScreen(viewModel: MeasureViewModel) {
                         recordCount = arSavedRecords.size,
                         isHistoryOpen = showHistorySheet,
                         onToggleHistory = { showHistorySheet = !showHistorySheet },
-                        onOpenSettings = { showSettingsDialog = true }
+                        onOpenSettings = openSettingsActivity
                     )
                 }
 
@@ -283,17 +290,14 @@ fun MainScreen(viewModel: MeasureViewModel) {
                                 .fillMaxSize()
                                 .padding(if (currentMode == 0 || currentMode == 1) PaddingValues(0.dp) else innerPadding)
                         ) {
-                            // Material 3 Expressive Spring Scale & Fade Transition
+                            // Pure Fade-In / Fade-Out Transition between AR and Screen Ruler
                             AnimatedContent(
                                 targetState = currentMode,
                                 transitionSpec = {
-                                    (fadeIn(animationSpec = ExpressiveMotion.effectsDefault()) +
-                                        scaleIn(
-                                            initialScale = 0.96f,
-                                            animationSpec = ExpressiveMotion.spatialDefault()
-                                        )).togetherWith(
-                                        fadeOut(animationSpec = ExpressiveMotion.effectsFast())
-                                    )
+                                    fadeIn(animationSpec = ExpressiveMotion.effectsDefault())
+                                        .togetherWith(
+                                            fadeOut(animationSpec = ExpressiveMotion.effectsFast())
+                                        )
                                 },
                                 contentKey = { it },
                                 modifier = Modifier
@@ -316,7 +320,7 @@ fun MainScreen(viewModel: MeasureViewModel) {
                                         ModernArCameraView(
                                             viewModel = viewModel,
                                             onShowHistoryClick = { showHistorySheet = !showHistorySheet },
-                                            onShowSettingsClick = { showSettingsDialog = true },
+                                            onShowSettingsClick = openSettingsActivity,
                                             bottomPadding = if (isCompact) innerPadding.calculateBottomPadding() else 0.dp,
                                             isObscuredByFullscreenOverlay = isObscuredByFullscreenOverlay
                                         )
@@ -469,27 +473,6 @@ fun MainScreen(viewModel: MeasureViewModel) {
                     },
                     viewModel = viewModel,
                     adaptiveState = adaptiveState
-                )
-            }
-
-            // Dedicated Full-Page / Two-Pane Settings Screen
-            androidx.compose.animation.AnimatedVisibility(
-                visible = showSettingsDialog,
-                enter = slideInHorizontally(
-                    initialOffsetX = { it },
-                    animationSpec = tween(300, easing = FastOutSlowInEasing)
-                ) + fadeIn(animationSpec = tween(200, easing = LinearEasing)),
-                exit = slideOutHorizontally(
-                    targetOffsetX = { it },
-                    animationSpec = tween(250, easing = FastOutSlowInEasing)
-                ) + fadeOut(animationSpec = tween(150, easing = LinearEasing)),
-                modifier = Modifier
-                    .fillMaxSize()
-                    .zIndex(100f)
-            ) {
-                SettingsScreen(
-                    viewModel = viewModel,
-                    onNavigateBack = { showSettingsDialog = false }
                 )
             }
 

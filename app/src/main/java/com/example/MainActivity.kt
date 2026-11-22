@@ -17,18 +17,20 @@ import com.example.ui.viewmodel.MeasureViewModel
 class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        val isWide = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            this.display?.isWideColorGamut == true
-        } else {
-            @Suppress("DEPRECATION")
-            windowManager.defaultDisplay?.isWideColorGamut == true
-        }
+        val isWide = runCatching {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                this.display?.isWideColorGamut == true
+            } else {
+                @Suppress("DEPRECATION")
+                windowManager.defaultDisplay?.isWideColorGamut == true
+            }
+        }.getOrDefault(false)
         if (isWide) {
             window.colorMode = android.content.pm.ActivityInfo.COLOR_MODE_WIDE_COLOR_GAMUT
         }
         enforceHighDisplayRefreshRate()
-        super.onCreate(savedInstanceState)
 
         // Initialize the measuring tool viewmodel
         viewModel = ViewModelProvider(this)[MeasureViewModel::class.java]
@@ -114,11 +116,10 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         if (::viewModel.isInitialized) {
+            viewModel.onResume()
             val targetFps = viewModel.effectiveTargetFps.value.toFloat()
             enforceHighDisplayRefreshRate(targetFps)
             viewModel.pixelPerformanceMonitor.applySustainedPerformanceMode(window, true)
-            viewModel.syncWithSystemLocale()
-            viewModel.onResume()
             if (viewModel.arSession == null) {
                 viewModel.checkAndInitArCore(this, forceRetry = true)
             }

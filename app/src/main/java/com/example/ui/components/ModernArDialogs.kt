@@ -14,6 +14,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -494,15 +495,21 @@ fun ActiveTrackingStabilityWarningBanner(
     onActionClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val bannerColor = if (stability.level == StabilityLevel.POOR) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.errorContainer
+    val cs = MaterialTheme.colorScheme
+    val isPoor = stability.level == StabilityLevel.POOR
+    val containerColor = if (isPoor) cs.errorContainer else cs.tertiaryContainer
+    val contentColor = if (isPoor) cs.onErrorContainer else cs.onTertiaryContainer
+    val accentColor = if (isPoor) cs.error else cs.tertiary
 
     Surface(
-        color = MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.95f),
+        color = containerColor.copy(alpha = 0.94f),
+        contentColor = contentColor,
         shape = RoundedCornerShape(20.dp),
-        border = BorderStroke(1.5.dp, bannerColor.copy(alpha = 0.85f)),
+        border = BorderStroke(1.5.dp, accentColor.copy(alpha = 0.72f)),
         shadowElevation = 0.dp,
         modifier = modifier
             .fillMaxWidth()
+            .testTag("tracking_stability_warning_banner")
     ) {
         Row(
             modifier = Modifier
@@ -514,7 +521,7 @@ fun ActiveTrackingStabilityWarningBanner(
             Box(
                 modifier = Modifier
                     .size(42.dp)
-                    .background(bannerColor.copy(alpha = 0.18f), CircleShape),
+                    .background(accentColor.copy(alpha = 0.16f), CircleShape),
                 contentAlignment = Alignment.Center
             ) {
                 Icon(
@@ -525,7 +532,7 @@ fun ActiveTrackingStabilityWarningBanner(
                         else -> Icons.Rounded.WarningAmber
                     },
                     contentDescription = null,
-                    tint = bannerColor,
+                    tint = accentColor,
                     modifier = Modifier.size(24.dp)
                 )
             }
@@ -535,7 +542,7 @@ fun ActiveTrackingStabilityWarningBanner(
                     text = stability.warningMessage ?: tr("stab_banner_default"),
                     style = MaterialTheme.typography.titleSmall,
                     fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onSurface
+                    color = contentColor
                 )
                 Spacer(modifier = Modifier.height(2.dp))
                 Text(
@@ -546,24 +553,34 @@ fun ActiveTrackingStabilityWarningBanner(
                         else -> tr("stab_sub_default")
                     },
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    color = contentColor.copy(alpha = 0.85f),
                     lineHeight = 15.sp
                 )
             }
 
-            Surface(
-                color = bannerColor.copy(alpha = 0.25f),
-                shape = RoundedCornerShape(12.dp),
-                border = BorderStroke(1.dp, bannerColor.copy(alpha = 0.6f)),
-                modifier = Modifier.clickable { onActionClick() }
-            ) {
-                Text(
-                    text = tr(if (stability.isLightingDeficient) "stab_action_torch" else "stab_action_diag"),
-                    style = MaterialTheme.typography.labelSmall,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onSurface,
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp)
-                )
+            if (!stability.isLightingDeficient) {
+                Surface(
+                    onClick = onActionClick,
+                    color = accentColor.copy(alpha = 0.18f),
+                    contentColor = contentColor,
+                    shape = RoundedCornerShape(12.dp),
+                    border = BorderStroke(1.dp, accentColor.copy(alpha = 0.45f)),
+                    modifier = Modifier
+                        .heightIn(min = 48.dp)
+                        .testTag("stab_diag_button")
+                ) {
+                    Box(
+                        contentAlignment = Alignment.Center,
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+                    ) {
+                        Text(
+                            text = tr("stab_action_diag"),
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = contentColor
+                        )
+                    }
+                }
             }
         }
     }
@@ -629,7 +646,7 @@ fun ArStabilityDiagnosticsDialog(
                         ) {
                             Text(
                                 stability.level.name,
-                                color = MaterialTheme.colorScheme.surface,
+                                color = contentColorFor(scoreColor),
                                 fontWeight = FontWeight.Bold,
                                 style = MaterialTheme.typography.labelMedium,
                                 modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)

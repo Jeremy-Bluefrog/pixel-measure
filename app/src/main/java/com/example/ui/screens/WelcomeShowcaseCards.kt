@@ -485,7 +485,7 @@ internal fun WelcomeCaptureShowcase(
                     Box(
                         modifier = Modifier
                             .size(8.dp)
-                            .background(Color(0xFFE53935).copy(alpha = recAlpha), CircleShape)
+                            .background(MaterialTheme.colorScheme.error.copy(alpha = recAlpha), CircleShape)
                     )
                     Text(
                         text = tr("wel_card_capture_badge"),

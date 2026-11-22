@@ -188,10 +188,15 @@ fun ModernArBottomDeck(
         }
 
         // 3. Interactive Bottom Action Deck (Plus button fixed dead-center, expressive back button on left, shutter on right)
+        val fabSize = (64f * uiButtonScale).coerceIn(56f, 76f).dp
+        val btnSize = (48f * uiButtonScale).coerceIn(48f, 54f).dp
+        val shutterSize = (54f * uiButtonScale).coerceIn(48f, 64f).dp
+        val deckHeight = (fabSize + 20.dp).coerceAtLeast(84.dp)
+
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(84.dp),
+                .height(deckHeight),
             contentAlignment = Alignment.Center
         ) {
             // Center: M3 Expressive Morphing Add-Point FAB (Always fixed dead-center)
@@ -232,7 +237,7 @@ fun ModernArBottomDeck(
                 },
                 interactionSource = addFabInteractionSource,
                 modifier = Modifier
-                    .size((64 * uiButtonScale).dp)
+                    .size(fabSize)
                     .graphicsLayer {
                         scaleX = addFabScale
                         scaleY = addFabScale
@@ -266,11 +271,11 @@ fun ModernArBottomDeck(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 16.dp),
+                    .padding(horizontal = 4.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Box(modifier = Modifier.height((48 * uiButtonScale).coerceAtLeast(48f).dp)) {
+                Box(modifier = Modifier.height(btnSize)) {
                     androidx.compose.animation.AnimatedVisibility(
                         visible = hasCapturedPoints,
                         enter = fadeIn(animationSpec = ExpressiveMotion.effectsDefault()) +
@@ -280,7 +285,6 @@ fun ModernArBottomDeck(
                             scaleOut(targetScale = 0.72f, animationSpec = ExpressiveMotion.spatialFast()) +
                             slideOutHorizontally(targetOffsetX = { -it }, animationSpec = ExpressiveMotion.spatialFast())
                     ) {
-                        val btnSize = (48 * uiButtonScale).coerceAtLeast(48f).dp
                         val showClearBtn = capturedPointsCount >= 2
                         Row(
                             horizontalArrangement = Arrangement.spacedBy(2.dp),
@@ -374,9 +378,9 @@ fun ModernArBottomDeck(
                 val isCameraVideoMode by viewModel.isCameraVideoMode.collectAsStateWithLifecycle()
 
                 PixelShutterButton(
-                    size = (54 * uiButtonScale).coerceAtLeast(48f).dp,
+                    size = shutterSize,
                     isRecording = isRecordingVideo,
-                    innerCircleColor = if (isCameraVideoMode) Color(0xFFE53935) else Color.White,
+                    innerCircleColor = if (isCameraVideoMode) MaterialTheme.colorScheme.error else Color.White,
                     onClick = {
                         haptic.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
                         if (isRecordingVideo) {

@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
@@ -42,9 +43,14 @@ fun PixelShutterButton(
     outerRingColor: Color = Color.White.copy(alpha = 0.18f),
     outerBorderColor: Color = Color.White.copy(alpha = 0.9f),
     innerCircleColor: Color = Color.White,
-    recordingColor: Color = Color(0xFFE53935),
+    recordingColor: Color = Color.Unspecified,
     testTag: String = "pixel_shutter_button"
 ) {
+    val resolvedRecordingColor = if (recordingColor == Color.Unspecified) {
+        MaterialTheme.colorScheme.error
+    } else {
+        recordingColor
+    }
     val interactionSource = remember { MutableInteractionSource() }
 
     // Keep size steady on press without shrinking
@@ -82,12 +88,12 @@ fun PixelShutterButton(
 
     // Animated inner shape & color
     val animatedBorderColor by animateColorAsState(
-        targetValue = if (isRecording) recordingColor.copy(alpha = pulseAlpha) else outerBorderColor,
+        targetValue = if (isRecording) resolvedRecordingColor.copy(alpha = pulseAlpha) else outerBorderColor,
         animationSpec = tween(300),
         label = "BorderColor"
     )
     val animatedInnerColor by animateColorAsState(
-        targetValue = if (isRecording) recordingColor else innerCircleColor,
+        targetValue = if (isRecording) resolvedRecordingColor else innerCircleColor,
         animationSpec = tween(300),
         label = "InnerColor"
     )

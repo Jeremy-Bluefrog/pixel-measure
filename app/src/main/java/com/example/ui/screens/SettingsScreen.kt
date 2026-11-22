@@ -119,12 +119,8 @@ fun SettingsScreen(
         activeSubPage
     }
 
-    BackHandler(enabled = pendingConfirm == PendingConfirmDialog.NONE) {
-        if (!isTwoPane && activeSubPage != SettingsSubPage.NONE) {
-            setActiveSubPage(SettingsSubPage.NONE)
-        } else {
-            onNavigateBack()
-        }
+    BackHandler(enabled = pendingConfirm == PendingConfirmDialog.NONE && !isTwoPane && activeSubPage != SettingsSubPage.NONE) {
+        setActiveSubPage(SettingsSubPage.NONE)
     }
 
     // Consumer-facing ViewModel states
@@ -472,7 +468,7 @@ fun SettingsScreen(
             )
             SettingsSubPage.TUTORIAL -> MeasurementTutorialPage(
                 onReplayWelcome = {
-                    viewModel.openWelcomeScreen()
+                    viewModel.requestReplayWelcome()
                     onNavigateBack()
                 },
                 onNavigateBack = { setActiveSubPage(SettingsSubPage.NONE) }

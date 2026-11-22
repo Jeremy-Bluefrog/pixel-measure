@@ -98,10 +98,11 @@ fun ModernArCameraView(
     var textureViewRef by remember { mutableStateOf<TextureView?>(null) }
     var modernArVulkanViewRef by remember { mutableStateOf<VulkanArSceneView?>(null) }
 
-    // Dedicated single-instance Camera2 manager
+    // Dedicated single-instance Camera2 manager scoped to this AR view instance
+    val arHostToken = remember { Any() }
     val camera2Manager = remember {
         HighSpeedCamera2Manager(context).also { manager ->
-            viewModel.setHighSpeedCamera2Manager(manager)
+            viewModel.registerArHost(arHostToken, manager)
         }
     }
 
@@ -110,10 +111,10 @@ fun ModernArCameraView(
 
     val hostActivity = remember(context) { context.findActivity() }
 
-    val startCameraAndArPipeline: (TextureView) -> Unit = remember(viewModel, camera2Manager, hostActivity) {
+    val startCameraAndArPipeline: (TextureView) -> Unit = remember(viewModel, camera2Manager, hostActivity, arHostToken) {
         { tv: TextureView ->
             coroutineScope.launch {
-                viewModel.setHighSpeedCamera2Manager(camera2Manager)
+                viewModel.registerArHost(arHostToken, camera2Manager)
                 viewModel.ensureArCoreInitialized(
                     activity = hostActivity,
                     forceRetry = (viewModel.modernArEngine.session == null)
@@ -202,7 +203,7 @@ fun ModernArCameraView(
     LaunchedEffect(effectiveTargetFps, modernArVulkanViewRef) {
         val fpsFloat = effectiveTargetFps.toFloat()
         modernArVulkanViewRef?.setTargetFrameRate(fpsFloat)
-        (context as? com.example.MainActivity)?.enforceHighDisplayRefreshRate(fpsFloat)
+        (hostActivity as? com.example.MainActivity)?.enforceHighDisplayRefreshRate(fpsFloat)
     }
 
     val currentIsObscured by rememberUpdatedState(isObscuredByFullscreenOverlay)
@@ -210,42 +211,49 @@ fun ModernArCameraView(
     LaunchedEffect(isObscuredByFullscreenOverlay, lifecycleOwner) {
         if (isObscuredByFullscreenOverlay) {
             modernArVulkanViewRef?.onPause()
-            viewModel.onPause()
+            viewModel.pauseArAndCameraIfOwned(arHostToken, camera2Manager)
         } else if (lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) {
+            viewModel.registerArHost(arHostToken, camera2Manager)
             viewModel.onResume()
             modernArVulkanViewRef?.onResume()
+            val tv = textureViewRef
+            if (hasCameraPermission && tv != null && tv.isAvailable && !camera2Manager.isCameraActiveOrOpening()) {
+                startCameraAndArPipeline(tv)
+            }
         }
     }
 
     // Lifecycle sync for Camera2, ARCore & Vulkan loop
     DisposableEffect(lifecycleOwner) {
+        viewModel.registerArHost(arHostToken, camera2Manager)
         if (!currentIsObscured) {
             viewModel.onResume()
         }
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
                 Lifecycle.Event.ON_RESUME -> {
-                    (context as? com.example.MainActivity)?.enforceHighDisplayRefreshRate(viewModel.effectiveTargetFps.value.toFloat())
+                    (hostActivity as? com.example.MainActivity)?.enforceHighDisplayRefreshRate(viewModel.effectiveTargetFps.value.toFloat())
                     hasCameraPermission = ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
+                    viewModel.registerArHost(arHostToken, camera2Manager)
                     if (!currentIsObscured) {
                         viewModel.onResume()
                         modernArVulkanViewRef?.onResume()
-                    }
-                    if (hasCameraPermission) {
-                        if (viewModel.isCameraSimulationActive.value && hasHardwareCamera(context)) {
-                            viewModel.setCameraSimulationActive(false)
-                        }
-                        val tv = textureViewRef
-                        if (tv != null && tv.isAvailable) {
-                            startCameraAndArPipeline(tv)
-                        } else if (viewModel.modernArEngine.session == null) {
-                            viewModel.checkAndInitArCore(hostActivity, forceRetry = true)
+                        if (hasCameraPermission) {
+                            if (viewModel.isCameraSimulationActive.value && hasHardwareCamera(context)) {
+                                viewModel.setCameraSimulationActive(false)
+                            }
+                            val tv = textureViewRef
+                            if (tv != null && tv.isAvailable && !camera2Manager.isCameraActiveOrOpening()) {
+                                startCameraAndArPipeline(tv)
+                            } else if (viewModel.modernArEngine.session == null) {
+                                viewModel.checkAndInitArCore(hostActivity, forceRetry = true)
+                            }
                         }
                     }
                 }
                 Lifecycle.Event.ON_PAUSE -> {
                     modernArVulkanViewRef?.onPause()
-                    viewModel.onPause()
+                    viewModel.pauseArAndCameraIfOwned(arHostToken, camera2Manager)
                 }
                 else -> {}
             }
@@ -255,11 +263,9 @@ fun ModernArCameraView(
             lifecycleOwner.lifecycle.removeObserver(observer)
             modernArVulkanViewRef?.destroy()
             modernArVulkanViewRef = null
-            viewModel.pauseArAndCamera(camera2Manager)
-            viewModel.onPause()
-            viewModel.setHighSpeedCamera2Manager(null)
-            viewModel.releaseVulkanPipelineBuffers()
-            viewModel.closeHighSpeedCamera()
+            viewModel.pauseArAndCameraIfOwned(arHostToken, camera2Manager)
+            viewModel.releaseVulkanPipelineBuffersIfOwned(arHostToken)
+            viewModel.clearArHostIfOwned(arHostToken, camera2Manager)
             if (videoRecorder.isRecording.value) {
                 videoRecorder.stopRecording { _, _, _ -> }
             }
@@ -438,27 +444,28 @@ fun ModernArCameraView(
 
                     // 1. High-Performance Camera2 TextureView Surface or Simulated 3D Environment Canvas
                     if (isCameraSimulationActive) {
+                        val simGridColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.22f)
+                        val simGlowColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
                         androidx.compose.foundation.Canvas(
                             modifier = Modifier
                                 .fillMaxSize()
-                                .background(Color(0xFF0F172A))
+                                .background(MaterialTheme.colorScheme.surfaceContainerLowest)
                         ) {
                             val w = size.width
                             val h = size.height
-                            val lineColor = Color(0x3300E5FF)
                             val step = 60.dp.toPx()
                             var x = 0f
                             while (x < w) {
-                                drawLine(lineColor, Offset(x, 0f), Offset(x, h), 1f)
+                                drawLine(simGridColor, Offset(x, 0f), Offset(x, h), 1f)
                                 x += step
                             }
                             var y = 0f
                             while (y < h) {
-                                drawLine(lineColor, Offset(0f, y), Offset(w, y), 1f)
+                                drawLine(simGridColor, Offset(0f, y), Offset(w, y), 1f)
                                 y += step
                             }
                             drawCircle(
-                                color = Color(0x1A00E5FF),
+                                color = simGlowColor,
                                 radius = w * 0.45f,
                                 center = Offset(w / 2f, h * 0.55f)
                             )
@@ -470,7 +477,7 @@ fun ModernArCameraView(
                                     isOpaque = true
                                 }
                                 textureViewRef = textureView
-                                viewModel.setHighSpeedCamera2Manager(camera2Manager)
+                                viewModel.registerArHost(arHostToken, camera2Manager)
 
                                 textureView.surfaceTextureListener = object : TextureView.SurfaceTextureListener {
                                     override fun onSurfaceTextureAvailable(surface: SurfaceTexture, width: Int, height: Int) {
@@ -487,7 +494,7 @@ fun ModernArCameraView(
                                     }
                                     override fun onSurfaceTextureDestroyed(surface: SurfaceTexture): Boolean {
                                         modernArVulkanViewRef?.onPause()
-                                        viewModel.pauseArAndCamera(camera2Manager)
+                                        viewModel.pauseArAndCameraIfOwned(arHostToken, camera2Manager)
                                         return true
                                     }
                                     override fun onSurfaceTextureUpdated(surface: SurfaceTexture) {}
@@ -500,7 +507,7 @@ fun ModernArCameraView(
                             },
                             onRelease = { _ ->
                                 modernArVulkanViewRef?.onPause()
-                                viewModel.pauseArAndCamera(camera2Manager)
+                                viewModel.pauseArAndCameraIfOwned(arHostToken, camera2Manager)
                                 textureViewRef = null
                             },
                             modifier = Modifier.fillMaxSize()
@@ -827,10 +834,10 @@ private fun ArViewportOverlayHudHost(
     Box(modifier = modifier) {
         if (isRecordingVideo) {
             Surface(
-                color = MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.94f),
-                contentColor = MaterialTheme.colorScheme.onSurface,
+                color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.94f),
+                contentColor = MaterialTheme.colorScheme.onErrorContainer,
                 shape = CircleShape,
-                border = androidx.compose.foundation.BorderStroke(1.5.dp, Color(0xFFE53935)),
+                border = androidx.compose.foundation.BorderStroke(1.5.dp, MaterialTheme.colorScheme.error),
                 shadowElevation = 0.dp
             ) {
                 Row(
@@ -841,13 +848,13 @@ private fun ArViewportOverlayHudHost(
                     Box(
                         modifier = Modifier
                             .size(10.dp)
-                            .background(Color(0xFFE53935), CircleShape)
+                            .background(MaterialTheme.colorScheme.error, CircleShape)
                     )
                     val mins = recordingSeconds / 60
                     val secs = recordingSeconds % 60
                     Text(
                         text = String.format(java.util.Locale.US, "REC %02d:%02d", mins, secs),
-                        color = MaterialTheme.colorScheme.onSurface,
+                        color = MaterialTheme.colorScheme.onErrorContainer,
                         fontSize = 13.sp,
                         fontWeight = FontWeight.Bold,
                         fontFamily = FontFamily.Monospace
@@ -1076,12 +1083,24 @@ private fun ArCoreRequirementBanner(
     modifier: Modifier = Modifier
 ) {
     val isMissing = status == ArCoreEngineStatus.NEEDS_INSTALLATION
+    val accentColor = if (isMissing) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.error
+    val containerColor = if (isMissing) {
+        MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.94f)
+    } else {
+        MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.94f)
+    }
+    val contentColor = if (isMissing) {
+        MaterialTheme.colorScheme.onTertiaryContainer
+    } else {
+        MaterialTheme.colorScheme.onErrorContainer
+    }
     Surface(
         shape = RoundedCornerShape(18.dp),
-        color = MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.94f),
+        color = containerColor,
+        contentColor = contentColor,
         border = androidx.compose.foundation.BorderStroke(
             width = 1.dp,
-            color = if (isMissing) Color(0xFFF59E0B) else MaterialTheme.colorScheme.error
+            color = accentColor.copy(alpha = 0.7f)
         ),
         modifier = modifier
             .fillMaxWidth()
@@ -1099,14 +1118,14 @@ private fun ArCoreRequirementBanner(
                 Icon(
                     imageVector = if (isMissing) Icons.Rounded.DownloadForOffline else Icons.Rounded.WarningAmber,
                     contentDescription = null,
-                    tint = if (isMissing) Color(0xFFF59E0B) else MaterialTheme.colorScheme.error,
+                    tint = accentColor,
                     modifier = Modifier.size(20.dp)
                 )
                 Text(
                     text = tr(if (isMissing) "arcore_install_title" else "arcore_not_ready_title"),
                     style = MaterialTheme.typography.titleSmall,
                     fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onSurface
+                    color = contentColor
                 )
             }
             Text(
@@ -1116,7 +1135,7 @@ private fun ArCoreRequirementBanner(
                     message.ifBlank { tr("arcore_not_ready_desc") }
                 },
                 style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                color = contentColor.copy(alpha = 0.88f)
             )
             Row(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),

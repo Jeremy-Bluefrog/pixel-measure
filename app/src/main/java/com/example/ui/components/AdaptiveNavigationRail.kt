@@ -152,8 +152,7 @@ fun AdaptiveNavigationRail(
                     shape = RoundedCornerShape(12.dp),
                     color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.7f),
                     modifier = Modifier
-                        .minimumInteractiveComponentSize()
-                        .size(width = 56.dp, height = 40.dp)
+                        .size(width = 56.dp, height = 48.dp)
                         .clip(RoundedCornerShape(12.dp))
                         .testTag("rail_unit_button"),
                     onClick = { showUnitMenu = true }

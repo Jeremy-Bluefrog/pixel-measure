@@ -234,11 +234,22 @@ class MeasureViewModel(private val app: Application) : AndroidViewModel(app) {
         triggerHapticFeedback(HapticType.CLICK)
     }
 
+    fun requestReplayWelcome() {
+        _showWelcomeScreen.value = true
+        prefs.edit()
+            .putBoolean("pending_replay_welcome", true)
+            .putBoolean("has_seen_welcome_screen", false)
+            .apply()
+        triggerHapticFeedback(HapticType.CLICK)
+    }
+
     fun dismissWelcomeScreen(neverShowAgain: Boolean = true) {
         _showWelcomeScreen.value = false
+        val editor = prefs.edit().remove("pending_replay_welcome")
         if (neverShowAgain) {
-            prefs.edit().putBoolean("has_seen_welcome_screen", true).apply()
+            editor.putBoolean("has_seen_welcome_screen", true)
         }
+        editor.apply()
         triggerHapticFeedback(HapticType.CLICK)
     }
 
@@ -426,6 +437,8 @@ class MeasureViewModel(private val app: Application) : AndroidViewModel(app) {
     private val vulkanCircleZ = DoubleArray(48)
     private val vulkanCircleFloats = FloatArray(48 * 3)
     private val surfaceNormalScratch = floatArrayOf(0f, 1f, 0f)
+    private val frameNormalSlerp = OneEuroNormalSlerp(minCutoff = 2.4, beta = 6.5, dCutoff = 1.2)
+    private var lastArFrameTimestampNs: Long = 0L
     private val normalEmitPool = arrayOf(FloatArray(3), FloatArray(3))
     private var normalEmitIdx = 0
     private var lastTapTimestampMs = 0L
@@ -1403,6 +1416,17 @@ class MeasureViewModel(private val app: Application) : AndroidViewModel(app) {
         }
     }
 
+    @Volatile
+    private var isSyncingPrefsFromDisk = false
+
+    private val prefChangeListener = SharedPreferences.OnSharedPreferenceChangeListener { _, _ ->
+        if (!isSyncingPrefsFromDisk) {
+            mainHandler.post {
+                syncAllPreferencesFromDisk(consumePendingWelcome = false)
+            }
+        }
+    }
+
     init {
         modernArEngine.currentLangCode = _currentLanguage.value
         modernArEngine.reportRuntimeError(tr("arcore_checking"))
@@ -1446,6 +1470,139 @@ class MeasureViewModel(private val app: Application) : AndroidViewModel(app) {
             Log.e("MeasureViewModel", "Failed to register batteryReceiver", e)
         }
         updateBatteryStatusAndEvaluate(showToast = false)
+        try {
+            prefs.registerOnSharedPreferenceChangeListener(prefChangeListener)
+        } catch (_: Throwable) {}
+    }
+
+    /**
+     * Synchronizes all user preferences from shared disk storage so separate Activities
+     * (e.g. MainActivity <-> SettingsActivity) stay seamlessly in sync without stale state.
+     */
+    fun syncAllPreferencesFromDisk(consumePendingWelcome: Boolean = false) {
+        isSyncingPrefsFromDisk = true
+        try {
+            if (consumePendingWelcome && prefs.getBoolean("pending_replay_welcome", false)) {
+                prefs.edit().remove("pending_replay_welcome").apply()
+                _showWelcomeScreen.value = true
+            }
+            val diskLang = prefs.getString("selected_language", _currentLanguage.value) ?: _currentLanguage.value
+            if (diskLang != _currentLanguage.value) {
+                _currentLanguage.value = diskLang
+                modernArEngine.currentLangCode = diskLang
+            }
+            _selectedUnit.value = prefs.getString("selected_unit", "cm") ?: "cm"
+            _themeMode.value = prefs.getString("theme_mode", "SYSTEM") ?: "SYSTEM"
+            _reticleStyle.value = prefs.getString("reticle_style", "DOUBLE_RING") ?: "DOUBLE_RING"
+            _arAccentPalette.value = prefs.getString("ar_accent_palette", "DYNAMIC") ?: "DYNAMIC"
+            _lineThickness.value = prefs.getFloat("line_thickness", 3.5f)
+            _arFontSize.value = prefs.getString("ar_font_size", "STANDARD") ?: "STANDARD"
+            _badgeOpacity.value = prefs.getString("badge_opacity", "GLASS") ?: "GLASS"
+            _hudStyle.value = prefs.getString("hud_style", "GLASS") ?: "GLASS"
+            _gridOverlayStyle.value = prefs.getString("grid_overlay_style", "OFF") ?: "OFF"
+            _uiButtonScale.value = prefs.getFloat("ui_button_scale", 1.0f)
+            _uiCornerStyle.value = prefs.getString("ui_corner_style", "ROUNDED") ?: "ROUNDED"
+            _keepScreenOn.value = prefs.getBoolean("keep_screen_on", true)
+            _autoCopyOnComplete.value = prefs.getBoolean("auto_copy_on_complete", false)
+            _rulerTheme.value = prefs.getString("ruler_theme", "MATERIAL_YOU") ?: "MATERIAL_YOU"
+            _rulerDualUnit.value = prefs.getBoolean("ruler_dual_unit", false)
+            _rulerCalibration.value = prefs.getFloat("ruler_calibration", 1.0f)
+            _rulerFontScale.value = prefs.getFloat("ruler_font_scale", 1.0f).coerceIn(0.8f, 1.8f)
+            _levelToleranceDeg.value = prefs.getFloat("level_tolerance_deg", 0.5f).coerceIn(0.1f, 3.0f)
+            _levelAudioEnabled.value = prefs.getBoolean("level_audio_enabled", true)
+
+            _vertexSnapThresholdCm.value = prefs.getFloat("vertex_snap_cm", 2.5f).coerceIn(0f, 6.0f)
+            _showPointCloud.value = prefs.getBoolean("show_point_cloud", true)
+            vibrateOnAlignment.value = prefs.getBoolean("vibrate_align", true)
+
+            val sCorr = prefs.getBoolean("sensor_correction_enabled", true)
+            sensorCorrectionEnabled.value = sCorr
+            sensorCorrectionEngine.isSensorCorrectionEnabled = sCorr
+
+            val sAnti = prefs.getBoolean("sensor_antijitter_enabled", true)
+            antiJitterEnabled.value = sAnti
+            sensorCorrectionEngine.isAntiJitterEnabled = sAnti
+
+            val sGrav = prefs.getBoolean("sensor_gravity_align_enabled", true)
+            gravityAlignmentEnabled.value = sGrav
+            sensorCorrectionEngine.isGravityAlignmentEnabled = sGrav
+
+            val sBaro = prefs.getBoolean("sensor_barometer_fusion_enabled", true)
+            barometerFusionEnabled.value = sBaro
+            sensorCorrectionEngine.isBarometerFusionEnabled = sBaro
+
+            val sJerk = prefs.getBoolean("sensor_jerk_rejection_enabled", true)
+            jerkRejectionEnabled.value = sJerk
+            sensorCorrectionEngine.isJerkRejectionEnabled = sJerk
+
+            val sProx = prefs.getBoolean("sensor_proximity_enabled", true)
+            proximityContactEnabled.value = sProx
+            sensorCorrectionEngine.isProximityZeroContactEnabled = sProx
+
+            val sStereo = prefs.getBoolean("sensor_stereo_enabled", true)
+            stereoParallaxEnabled.value = sStereo
+            sensorCorrectionEngine.isStereoParallaxScaleEnabled = sStereo
+
+            val sMulti = prefs.getBoolean("sensor_multisample_enabled", true)
+            multiSampleAveragingEnabled.value = sMulti
+            sensorCorrectionEngine.isMultiSampleAveragingEnabled = sMulti
+
+            val sCoplanar = prefs.getBoolean("sensor_coplanar_enabled", true)
+            coplanarProjectionEnabled.value = sCoplanar
+            sensorCorrectionEngine.isCoplanarProjectionEnabled = sCoplanar
+
+            val sOrtho = prefs.getBoolean("sensor_ortho_snap_enabled", true)
+            orthogonalSnapEnabled.value = sOrtho
+            sensorCorrectionEngine.isOrthogonalSnapEnabled = sOrtho
+
+            val rawDepthEn = prefs.getBoolean("raw_depth_confidence_enabled", true)
+            rawDepthConfidenceEnabled.value = rawDepthEn
+            modernArEngine.isRawDepthConfidenceFilterEnabled = rawDepthEn
+
+            val rawDepthThresh = prefs.getInt("raw_depth_confidence_threshold", 45).coerceIn(10, 95)
+            rawDepthConfidenceThreshold.value = rawDepthThresh
+            modernArEngine.rawDepthConfidenceThreshold = rawDepthThresh
+
+            val scaleCalib = prefs.getFloat("scale_calibration_factor", 1.0000f).coerceIn(0.8500f, 1.1500f)
+            scaleCalibrationFactor.value = scaleCalib
+            sensorCorrectionEngine.userScaleCalibrationFactor = scaleCalib
+
+            _cameraAspectRatio.value = if (prefs.getBoolean("camera_aspect_ratio_user_selected", false)) {
+                prefs.getString("camera_aspect_ratio", "FULL") ?: "FULL"
+            } else {
+                "FULL"
+            }
+            _useDisplayP3ColorSpace.value = prefs.getBoolean("use_display_p3", true)
+            val dirtWarn = prefs.getBoolean("lens_dirt_warning", true)
+            _isLensDirtWarningEnabled.value = dirtWarn
+            if (!dirtWarn) _isLensSmudged.value = false
+            _torchBrightness.value = prefs.getFloat("torch_brightness", 1.0f).coerceIn(0.1f, 1.0f)
+
+            val newRefreshMode = prefs.getString("refresh_rate_mode", "120Hz") ?: "120Hz"
+            val newHighDef = prefs.getBoolean("high_definition_quality_enabled", true)
+            val targetFps = refreshRateToTargetFps(newRefreshMode)
+            val newHighFps = prefs.getBoolean("high_fps_mode_enabled", targetFps >= 60)
+            refreshRateMode.value = newRefreshMode
+            highFpsModeEnabled.value = newHighFps
+            highDefinitionQualityEnabled.value = newHighDef
+            modernArEngine.preferHighFps = newHighFps
+            modernArEngine.preferHighDef = newHighDef
+            pixelPerformanceMonitor.updateUserPreferences(newHighFps, newHighDef, targetFps)
+            val policy = pixelPerformanceMonitor.policy.value
+            _effectiveTargetFps.value = policy.targetFps
+            vulkanGraphicsPipeline.updateGpuPolicy(policy.tier, policy.targetFps)
+            _gpuRenderPolicy.value = vulkanGraphicsPipeline.currentRenderPolicy
+            _gpuTelemetry.value = vulkanGraphicsPipeline.getTelemetrySnapshot()
+            highSpeedCamera2Manager?.updatePerformanceConfig(
+                highFps = newHighFps,
+                highDef = newHighDef,
+                maxFps = policy.targetFps
+            )
+            _autoBatteryProfileEnabled.value = prefs.getBoolean("auto_battery_profile", true)
+            _currentAppliedProfile.value = prefs.getString("current_applied_profile", "BALANCED") ?: "BALANCED"
+        } finally {
+            isSyncingPrefsFromDisk = false
+        }
     }
 
     private fun applyPixelThermalPolicy(policy: PixelThermalPolicy) {
@@ -1655,7 +1812,7 @@ class MeasureViewModel(private val app: Application) : AndroidViewModel(app) {
             if (prevTarget == null || ArMath.distance(prevTarget, finalTargetPoint) > 0.0005) {
                 _liveTargetPoint.value = finalTargetPoint
             }
-            updateSmoothedSurfaceNormal(centerHit)
+            updateSmoothedSurfaceNormal(centerHit, frame.timestamp)
             if (displayWidth > 0 && displayHeight > 0) {
                 if (ArMath.projectWorldToScreenInPlace(
                         worldPoint = finalTargetPoint,
@@ -1840,65 +1997,52 @@ class MeasureViewModel(private val app: Application) : AndroidViewModel(app) {
         return centerHit
     }
 
-    private fun updateSmoothedSurfaceNormal(centerHit: HitTestResult) {
+    private fun updateSmoothedSurfaceNormal(centerHit: HitTestResult, frameTimestampNs: Long) {
         val now = System.currentTimeMillis()
         if (!centerHit.hasSurfaceNormal) {
             // Brief grace window prevents 3D reticle flicker on transient hit-test gaps
             if (_isSurfaceNormalLocked.value && (now - lastSurfaceNormalTimestampMs > 450L)) {
                 _isSurfaceNormalLocked.value = false
+                frameNormalSlerp.reset()
             }
             return
         }
         lastSurfaceNormalTimestampMs = now
-        val tx = centerHit.normalX
-        val ty = centerHit.normalY
-        val tz = centerHit.normalZ
-        val tLen = kotlin.math.sqrt(tx * tx + ty * ty + tz * tz)
-        if (tLen < 1e-5f || tLen.isNaN()) return
-        val ntx = tx / tLen
-        val nty = ty / tLen
-        val ntz = tz / tLen
 
-        if (!_isSurfaceNormalLocked.value) {
+        val dtSec = if (lastArFrameTimestampNs > 0L && frameTimestampNs > lastArFrameTimestampNs) {
+            ((frameTimestampNs - lastArFrameTimestampNs) / 1_000_000_000.0).coerceIn(0.004, 0.050)
+        } else {
+            0.016
+        }
+        lastArFrameTimestampNs = frameTimestampNs
+
+        val wasLocked = _isSurfaceNormalLocked.value
+        val prevOut = normalEmitPool[normalEmitIdx]
+        val ok = frameNormalSlerp.update(
+            targetNx = centerHit.normalX,
+            targetNy = centerHit.normalY,
+            targetNz = centerHit.normalZ,
+            dtSec = dtSec,
+            stabilizeHorizontal = true,
+            outNormal = surfaceNormalScratch
+        )
+        if (!ok) return
+
+        if (!wasLocked) {
             _isSurfaceNormalLocked.value = true
-            surfaceNormalScratch[0] = ntx
-            surfaceNormalScratch[1] = nty
-            surfaceNormalScratch[2] = ntz
-            normalEmitIdx = normalEmitIdx xor 1
-            val out = normalEmitPool[normalEmitIdx]
-            out[0] = ntx
-            out[1] = nty
-            out[2] = ntz
-            _liveSurfaceNormal.value = out
-            return
+        } else {
+            val dotPrev = prevOut[0] * surfaceNormalScratch[0] +
+                prevOut[1] * surfaceNormalScratch[1] +
+                prevOut[2] * surfaceNormalScratch[2]
+            if (dotPrev > 0.99992f) return
         }
 
-        val cx = surfaceNormalScratch[0]
-        val cy = surfaceNormalScratch[1]
-        val cz = surfaceNormalScratch[2]
-        val dot = (cx * ntx + cy * nty + cz * ntz).coerceIn(-1f, 1f)
-        if (dot > 0.9996f) return
-
-        // Adaptive angular smoothing without sudden jump threshold
-        val alpha = (0.20f + (1f - dot) * 0.40f).coerceIn(0.20f, 0.52f)
-        var sx = cx + (ntx - cx) * alpha
-        var sy = cy + (nty - cy) * alpha
-        var sz = cz + (ntz - cz) * alpha
-        val sLen = kotlin.math.sqrt(sx * sx + sy * sy + sz * sz)
-        if (sLen > 1e-5f) {
-            sx /= sLen
-            sy /= sLen
-            sz /= sLen
-            surfaceNormalScratch[0] = sx
-            surfaceNormalScratch[1] = sy
-            surfaceNormalScratch[2] = sz
-            normalEmitIdx = normalEmitIdx xor 1
-            val out = normalEmitPool[normalEmitIdx]
-            out[0] = sx
-            out[1] = sy
-            out[2] = sz
-            _liveSurfaceNormal.value = out
-        }
+        normalEmitIdx = normalEmitIdx xor 1
+        val out = normalEmitPool[normalEmitIdx]
+        out[0] = surfaceNormalScratch[0]
+        out[1] = surfaceNormalScratch[1]
+        out[2] = surfaceNormalScratch[2]
+        _liveSurfaceNormal.value = out
     }
 
     private fun prepareVulkanCircleVertices(
@@ -1959,7 +2103,10 @@ class MeasureViewModel(private val app: Application) : AndroidViewModel(app) {
         if (liveTarget != null) {
             val norm = surfaceNormalScratch
             ArMath.buildOrthonormalBasis(norm[0].toDouble(), norm[1].toDouble(), norm[2].toDouble(), vulkanCircleBasis)
-            val reticleRadius = ((_liveDistanceMeters.value ?: 1.0) * 0.045).coerceIn(0.018, 0.25)
+            val camDist = ArMath.cameraDistanceToWorldPoint(
+                liveTarget.x, liveTarget.y, liveTarget.z, vulkanViewMatrixBuffer
+            ).coerceIn(0.25, 6.0)
+            val reticleRadius = (camDist * 0.036).coerceIn(0.016, 0.22)
             val count = ArMath.sampleCircle3DWorldCoords(
                 liveTarget.x, liveTarget.y, liveTarget.z, reticleRadius,
                 vulkanCircleBasis, segments, vulkanCircleX, vulkanCircleY, vulkanCircleZ
@@ -2385,6 +2532,8 @@ class MeasureViewModel(private val app: Application) : AndroidViewModel(app) {
         _isSnapped.value = false
         _isMeasurementAvailable.value = false
         _isSurfaceNormalLocked.value = false
+        frameNormalSlerp.reset()
+        lastArFrameTimestampNs = 0L
         surfaceNormalScratch[0] = 0f
         surfaceNormalScratch[1] = 1f
         surfaceNormalScratch[2] = 0f
@@ -2395,6 +2544,18 @@ class MeasureViewModel(private val app: Application) : AndroidViewModel(app) {
     private var cameraControl: androidx.camera.core.CameraControl? = null
     // Active High-Speed Camera2 Manager reference (when in Direct Camera2 High-Speed mode)
     private var highSpeedCamera2Manager: com.example.logic.camera.HighSpeedCamera2Manager? = null
+    @Volatile
+    private var activeArHostToken: Any? = null
+
+    fun registerArHost(
+        token: Any,
+        manager: com.example.logic.camera.HighSpeedCamera2Manager
+    ) {
+        activeArHostToken = token
+        setHighSpeedCamera2Manager(manager)
+    }
+
+    fun isArHostOwned(token: Any): Boolean = activeArHostToken === token
 
     fun setCameraControl(control: androidx.camera.core.CameraControl?) {
         cameraControl = control
@@ -2465,13 +2626,42 @@ class MeasureViewModel(private val app: Application) : AndroidViewModel(app) {
         }
     }
 
-
-
     fun pauseArAndCamera(manager: com.example.logic.camera.HighSpeedCamera2Manager? = highSpeedCamera2Manager) {
         modernArEngine.pause()
         try {
             manager?.closeCamera()
         } catch (_: Exception) {}
+    }
+
+    fun pauseArAndCameraIfOwned(
+        token: Any,
+        manager: com.example.logic.camera.HighSpeedCamera2Manager?
+    ) {
+        if (activeArHostToken === token) {
+            pauseArAndCamera(manager)
+        } else {
+            try {
+                manager?.closeCamera()
+            } catch (_: Exception) {}
+        }
+    }
+
+    fun releaseVulkanPipelineBuffersIfOwned(token: Any) {
+        if (activeArHostToken === token) {
+            releaseVulkanPipelineBuffers()
+        }
+    }
+
+    fun clearArHostIfOwned(
+        token: Any,
+        manager: com.example.logic.camera.HighSpeedCamera2Manager?
+    ) {
+        if (activeArHostToken === token) {
+            activeArHostToken = null
+        }
+        if (manager != null && highSpeedCamera2Manager === manager) {
+            highSpeedCamera2Manager = null
+        }
     }
 
     fun toggleHorizontalMirror(textureView: android.view.TextureView?) {
@@ -2987,6 +3177,7 @@ class MeasureViewModel(private val app: Application) : AndroidViewModel(app) {
 
     fun onResume() {
         syncWithSystemLocale()
+        syncAllPreferencesFromDisk(consumePendingWelcome = true)
         // ARCore SharedCamera resume is strictly triggered once Camera2 CaptureSession becomes active
         pixelPerformanceMonitor.startMonitoring()
         sensorCorrectionEngine.startListening()
@@ -3003,6 +3194,9 @@ class MeasureViewModel(private val app: Application) : AndroidViewModel(app) {
     override fun onCleared() {
         super.onCleared()
         mainHandler.removeCallbacksAndMessages(null)
+        try {
+            prefs.unregisterOnSharedPreferenceChangeListener(prefChangeListener)
+        } catch (_: Throwable) {}
         try {
             getApplication<Application>().unregisterReceiver(batteryReceiver)
         } catch (_: Exception) {}

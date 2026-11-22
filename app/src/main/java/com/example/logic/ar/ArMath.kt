@@ -1176,6 +1176,251 @@ object ArMath {
     }
 
     /**
+     * Zero-allocation 3D perspective circle projection that also outputs camera-forward depth (`clipW` meters)
+     * per vertex into [outClipW] and `[minClipW, maxClipW]` into [outDepthBounds] (size >= 2).
+     * Enables real 3D perspective width, atmospheric attenuation, and specular rim shading on near vs far arcs.
+     */
+    fun projectCircle3DWithDepthToScreen(
+        cx: Double,
+        cy: Double,
+        cz: Double,
+        radiusMeters: Double,
+        basis: DoubleArray,
+        segments: Int,
+        viewMatrix: FloatArray,
+        projectionMatrix: FloatArray,
+        screenWidth: Int,
+        screenHeight: Int,
+        outScreenX: FloatArray,
+        outScreenY: FloatArray,
+        outClipW: FloatArray,
+        outDepthBounds: FloatArray,
+        isHorizontallyMirrored: Boolean = false,
+        phaseOffsetRad: Double = 0.0
+    ): Int {
+        if (basis.size < 9 || segments < 3 || radiusMeters <= 1e-5 ||
+            viewMatrix.size < 16 || projectionMatrix.size < 16 ||
+            screenWidth <= 0 || screenHeight <= 0 ||
+            outScreenX.size < segments || outScreenY.size < segments ||
+            outClipW.size < segments || outDepthBounds.size < 2 ||
+            !isMatrixValid(viewMatrix) || !isMatrixValid(projectionMatrix)
+        ) {
+            return 0
+        }
+
+        val ux = basis[3]; val uy = basis[4]; val uz = basis[5]
+        val vx = basis[6]; val vy = basis[7]; val vz = basis[8]
+        val step = (2.0 * Math.PI) / segments
+        val flipY = projectionMatrix[5] < 0f
+        val maxMarginX = screenWidth * 3f
+        val maxMarginY = screenHeight * 3f
+
+        var minW = Float.MAX_VALUE
+        var maxW = -Float.MAX_VALUE
+
+        for (i in 0 until segments) {
+            val theta = phaseOffsetRad + i * step
+            val c = cos(theta) * radiusMeters
+            val s = sin(theta) * radiusMeters
+            val fx = (cx + c * ux + s * vx).toFloat()
+            val fy = (cy + c * uy + s * vy).toFloat()
+            val fz = (cz + c * uz + s * vz).toFloat()
+
+            val viewX = viewMatrix[0] * fx + viewMatrix[4] * fy + viewMatrix[8] * fz + viewMatrix[12]
+            val viewY = viewMatrix[1] * fx + viewMatrix[5] * fy + viewMatrix[9] * fz + viewMatrix[13]
+            val viewZ = viewMatrix[2] * fx + viewMatrix[6] * fy + viewMatrix[10] * fz + viewMatrix[14]
+            val viewW = viewMatrix[3] * fx + viewMatrix[7] * fy + viewMatrix[11] * fz + viewMatrix[15]
+
+            val clipX = projectionMatrix[0] * viewX + projectionMatrix[4] * viewY + projectionMatrix[8] * viewZ + projectionMatrix[12] * viewW
+            val clipY = projectionMatrix[1] * viewX + projectionMatrix[5] * viewY + projectionMatrix[9] * viewZ + projectionMatrix[13] * viewW
+            val clipZ = projectionMatrix[2] * viewX + projectionMatrix[6] * viewY + projectionMatrix[10] * viewZ + projectionMatrix[14] * viewW
+            val clipW = projectionMatrix[3] * viewX + projectionMatrix[7] * viewY + projectionMatrix[11] * viewZ + projectionMatrix[15] * viewW
+
+            if (clipW <= 0.001f || !clipW.isFinite()) return 0
+            val invW = 1.0f / clipW
+            val ndcX = clipX * invW
+            val ndcY = clipY * invW
+            val ndcZ = clipZ * invW
+            if (!ndcX.isFinite() || !ndcY.isFinite() || !ndcZ.isFinite() || ndcZ < -1.2f || ndcZ > 1.2f) {
+                return 0
+            }
+
+            val rawScreenX = (ndcX + 1.0f) * 0.5f * screenWidth
+            val screenX = if (isHorizontallyMirrored) screenWidth - rawScreenX else rawScreenX
+            val screenY = if (flipY) (ndcY + 1.0f) * 0.5f * screenHeight else (1.0f - ndcY) * 0.5f * screenHeight
+            if (!screenX.isFinite() || !screenY.isFinite() ||
+                screenX < -maxMarginX || screenX > screenWidth + maxMarginX ||
+                screenY < -maxMarginY || screenY > screenHeight + maxMarginY
+            ) {
+                return 0
+            }
+
+            outScreenX[i] = screenX
+            outScreenY[i] = screenY
+            outClipW[i] = clipW
+            if (clipW < minW) minW = clipW
+            if (clipW > maxW) maxW = clipW
+        }
+
+        outDepthBounds[0] = minW
+        outDepthBounds[1] = maxW
+        return segments
+    }
+
+    /**
+     * Exact geodesic Spherical Linear Interpolation (SLERP) between two 3D unit vectors.
+     * Guarantees constant angular velocity and unit-length output without vector shrinking across floor-to-wall flips.
+     */
+    fun slerpUnitNormal(
+        cnx: Float,
+        cny: Float,
+        cnz: Float,
+        tnx: Float,
+        tny: Float,
+        tnz: Float,
+        t: Float,
+        outNormal: FloatArray
+    ) {
+        if (outNormal.size < 3) return
+        val clampedT = t.coerceIn(0f, 1f).toDouble()
+
+        val cLen = sqrt((cnx * cnx + cny * cny + cnz * cnz).toDouble())
+        val tLen = sqrt((tnx * tnx + tny * tny + tnz * tnz).toDouble())
+        if (!cLen.isFinite() || cLen < 1e-6) {
+            if (tLen.isFinite() && tLen >= 1e-6) {
+                outNormal[0] = (tnx / tLen).toFloat()
+                outNormal[1] = (tny / tLen).toFloat()
+                outNormal[2] = (tnz / tLen).toFloat()
+            } else {
+                outNormal[0] = 0f; outNormal[1] = 1f; outNormal[2] = 0f
+            }
+            return
+        }
+        if (!tLen.isFinite() || tLen < 1e-6) {
+            outNormal[0] = (cnx / cLen).toFloat()
+            outNormal[1] = (cny / cLen).toFloat()
+            outNormal[2] = (cnz / cLen).toFloat()
+            return
+        }
+
+        val cx = cnx / cLen; val cy = cny / cLen; val cz = cnz / cLen
+        var tx = tnx / tLen; var ty = tny / tLen; var tz = tnz / tLen
+
+        var dot = (cx * tx + cy * ty + cz * tz).coerceIn(-1.0, 1.0)
+        // Always travel the shortest spherical arc (align hemisphere)
+        if (dot < 0.0) {
+            tx = -tx; ty = -ty; tz = -tz
+            dot = -dot
+        }
+
+        var rx: Double
+        var ry: Double
+        var rz: Double
+        if (dot > 0.9995) {
+            // Very small angle: normalized lerp avoids 0/sin(0) singularity with <1e-5 angular error
+            rx = cx + (tx - cx) * clampedT
+            ry = cy + (ty - cy) * clampedT
+            rz = cz + (tz - cz) * clampedT
+        } else {
+            val theta = acos(dot)
+            val sinTheta = sin(theta)
+            val w0 = sin((1.0 - clampedT) * theta) / sinTheta
+            val w1 = sin(clampedT * theta) / sinTheta
+            rx = cx * w0 + tx * w1
+            ry = cy * w0 + ty * w1
+            rz = cz * w0 + tz * w1
+        }
+
+        val rLen = sqrt(rx * rx + ry * ry + rz * rz)
+        if (rLen > 1e-6 && rLen.isFinite()) {
+            outNormal[0] = (rx / rLen).toFloat()
+            outNormal[1] = (ry / rLen).toFloat()
+            outNormal[2] = (rz / rLen).toFloat()
+        } else {
+            outNormal[0] = tx.toFloat()
+            outNormal[1] = ty.toFloat()
+            outNormal[2] = tz.toFloat()
+        }
+    }
+
+    /**
+     * Softly attenuates tiny (< 5 deg) depth-triangulation wobble on horizontal floors/tables toward world +Y,
+     * while preserving genuine > 5 deg inclined planes and walls completely unwarped.
+     */
+    fun stabilizeHorizontalNormal(
+        nx: Double,
+        ny: Double,
+        nz: Double,
+        outNormal: FloatArray
+    ) {
+        if (outNormal.size < 3) return
+        val len = sqrt(nx * nx + ny * ny + nz * nz)
+        if (!len.isFinite() || len < 1e-6) {
+            outNormal[0] = 0f; outNormal[1] = 1f; outNormal[2] = 0f
+            return
+        }
+        val ux = nx / len
+        val uy = ny / len
+        val uz = nz / len
+        val absY = abs(uy)
+        // cos(5.0 deg) ~= 0.996195
+        if (absY > 0.9962) {
+            val signY = if (uy >= 0.0) 1.0 else -1.0
+            val t = ((absY - 0.9962) / (1.0 - 0.9962)).coerceIn(0.0, 1.0)
+            val bias = 0.65 * t * t * (3.0 - 2.0 * t)
+            val bx = ux * (1.0 - bias)
+            val by = uy * (1.0 - bias) + signY * bias
+            val bz = uz * (1.0 - bias)
+            val bLen = sqrt(bx * bx + by * by + bz * bz)
+            if (bLen > 1e-6) {
+                outNormal[0] = (bx / bLen).toFloat()
+                outNormal[1] = (by / bLen).toFloat()
+                outNormal[2] = (bz / bLen).toFloat()
+                return
+            }
+        }
+        outNormal[0] = ux.toFloat()
+        outNormal[1] = uy.toFloat()
+        outNormal[2] = uz.toFloat()
+    }
+
+    /**
+     * Exact Euclidean distance in meters from the AR camera optical center to world point ([wx], [wy], [wz]),
+     * computed directly in camera view space without heap allocations.
+     */
+    fun cameraDistanceToWorldPoint(
+        wx: Double,
+        wy: Double,
+        wz: Double,
+        viewMatrix: FloatArray
+    ): Double {
+        if (!isMatrixValid(viewMatrix)) return 1.0
+        val fx = wx.toFloat()
+        val fy = wy.toFloat()
+        val fz = wz.toFloat()
+        val vx = viewMatrix[0] * fx + viewMatrix[4] * fy + viewMatrix[8] * fz + viewMatrix[12]
+        val vy = viewMatrix[1] * fx + viewMatrix[5] * fy + viewMatrix[9] * fz + viewMatrix[13]
+        val vz = viewMatrix[2] * fx + viewMatrix[6] * fy + viewMatrix[10] * fz + viewMatrix[14]
+        val dist = sqrt((vx * vx + vy * vy + vz * vz).toDouble())
+        return if (dist.isFinite() && dist > 0.02) dist else 1.0
+    }
+
+    /**
+     * Extracts exact camera world position `(camX, camY, camZ)` from an orthonormal ARCore/Vulkan [viewMatrix]
+     * using `-R^T * t`, without matrix inversion allocations.
+     */
+    fun extractCameraWorldPosition(viewMatrix: FloatArray, outCamXYZ: DoubleArray): Boolean {
+        if (outCamXYZ.size < 3 || !isMatrixValid(viewMatrix)) return false
+        val tx = viewMatrix[12].toDouble()
+        val ty = viewMatrix[13].toDouble()
+        val tz = viewMatrix[14].toDouble()
+        outCamXYZ[0] = -(viewMatrix[0] * tx + viewMatrix[1] * ty + viewMatrix[2] * tz)
+        outCamXYZ[1] = -(viewMatrix[4] * tx + viewMatrix[5] * ty + viewMatrix[6] * tz)
+        outCamXYZ[2] = -(viewMatrix[8] * tx + viewMatrix[9] * ty + viewMatrix[10] * tz)
+        return true
+    }
+
+    /**
      * Projects a 3D horizontal circle (parallel to the ground/floor XZ plane, normal = (0, 1, 0))
      * centered at [center3D] with radius [radiusMeters] into a list of 2D screen points (forming an ellipse in perspective).
      */

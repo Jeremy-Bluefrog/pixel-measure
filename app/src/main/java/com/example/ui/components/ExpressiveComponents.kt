@@ -325,10 +325,11 @@ fun ExpressiveSplitButton(
     contentColor: Color = MaterialTheme.colorScheme.onSurface,
     accentColor: Color = MaterialTheme.colorScheme.primary,
     borderColor: Color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
-    height: Dp = 40.dp,
+    height: Dp = 48.dp,
     leadingTestTag: String? = null,
     trailingTestTag: String? = null
 ) {
+    val safeHeight = if (height < 48.dp) 48.dp else height
     val haptic = LocalHapticFeedback.current
     val leadingInteraction = remember { MutableInteractionSource() }
     val trailingInteraction = remember { MutableInteractionSource() }
@@ -402,7 +403,7 @@ fun ExpressiveSplitButton(
             border = BorderStroke(0.8.dp, borderColor),
             modifier = Modifier
                 .then(leadingTestTag?.let { Modifier.testTag(it) } ?: Modifier)
-                .heightIn(min = height)
+                .heightIn(min = safeHeight)
                 .graphicsLayer {
                     scaleX = leadingScale
                     scaleY = leadingScale
@@ -446,7 +447,7 @@ fun ExpressiveSplitButton(
             border = BorderStroke(0.8.dp, borderColor),
             modifier = Modifier
                 .then(trailingTestTag?.let { Modifier.testTag(it) } ?: Modifier)
-                .heightIn(min = height)
+                .heightIn(min = safeHeight)
                 .graphicsLayer {
                     scaleX = trailingScale
                     scaleY = trailingScale

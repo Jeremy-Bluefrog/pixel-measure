@@ -41,6 +41,7 @@ class HighSpeedCamera2Manager(private val context: Context) {
     private var backgroundHandler: Handler? = null
     private val mainHandler = Handler(android.os.Looper.getMainLooper())
     private val cameraGeneration = java.util.concurrent.atomic.AtomicLong(0L)
+    private val cameraStateLock = Any()
 
     var sharedCamera: SharedCamera? = null
     var preferredCameraId: String? = null
@@ -102,10 +103,25 @@ class HighSpeedCamera2Manager(private val context: Context) {
             (isArCoreResumedChecker?.invoke() == true)
     }
 
-    fun isCameraOpenWithoutSharedCamera(): Boolean {
-        return (cameraDevice != null || captureSession != null || isOpening) &&
+    fun isCameraOpenWithoutSharedCamera(): Boolean = synchronized(cameraStateLock) {
+        (cameraDevice != null || captureSession != null || isOpening) &&
             !isClosed &&
             !isSharedCameraBoundToSession
+    }
+
+    fun isCameraActiveOrOpening(): Boolean = synchronized(cameraStateLock) {
+        (cameraDevice != null || captureSession != null || isOpening) && !isClosed
+    }
+
+    private fun postToBackground(action: () -> Unit): Boolean {
+        val handler = synchronized(cameraStateLock) {
+            if (isClosed || backgroundThread?.isAlive != true) null else backgroundHandler
+        } ?: return false
+        return try {
+            handler.post(action)
+        } catch (_: IllegalStateException) {
+            false
+        }
     }
 
     fun setHorizontallyMirrored(mirrored: Boolean, textureView: TextureView?) {
@@ -668,15 +684,22 @@ class HighSpeedCamera2Manager(private val context: Context) {
             if (currentSharedCamera != null) {
                 try {
                     currentSharedCamera.setAppSurfaces(activeCameraId ?: camera.id, listOf(surface))
-                    val arSurfaces = currentSharedCamera.arCoreSurfaces
-                    surfaceList.addAll(arSurfaces)
-                    for (arSurface in arSurfaces) {
+                    val validArSurfaces = currentSharedCamera.arCoreSurfaces.filter { it.isValid }
+                    if (validArSurfaces.isEmpty()) {
+                        Log.w(TAG, "SharedCamera returned zero valid ARCore surfaces; aborting session configure cleanly.")
+                        onSessionConfigured?.invoke(false, size)
+                        return
+                    }
+                    surfaceList.addAll(validArSurfaces)
+                    for (arSurface in validArSurfaces) {
                         requestBuilder.addTarget(arSurface)
                     }
                     isSharedCameraBoundToSession = true
-                    Log.i(TAG, "Configured SharedCamera (cam=${activeCameraId}, step=$fallbackStep) with ${arSurfaces.size} ARCore surfaces.")
+                    Log.i(TAG, "Configured SharedCamera (cam=${activeCameraId}, step=$fallbackStep) with ${validArSurfaces.size} ARCore surfaces.")
                 } catch (t: Throwable) {
                     Log.w(TAG, "Error binding SharedCamera surfaces: ${t.message}")
+                    onSessionConfigured?.invoke(false, size)
+                    return
                 }
             }
             previewRequestBuilder = requestBuilder
@@ -733,19 +756,21 @@ class HighSpeedCamera2Manager(private val context: Context) {
                     if (!isClosed && cameraGeneration.get() == sessionGen && cameraDevice == camera && surface.isValid) {
                         if (fallbackStep == 0) {
                             Log.w(TAG, "Retrying CameraCaptureSession with safe 30fps preview fallback...")
-                            backgroundHandler?.post {
-                                configureSession(
-                                    camera = camera,
-                                    surface = surface,
-                                    size = size,
-                                    characteristics = characteristics,
-                                    currentSharedCamera = currentSharedCamera,
-                                    sessionGen = sessionGen,
-                                    onSessionConfigured = onSessionConfigured,
-                                    fallbackStep = 1
-                                )
+                            if (postToBackground {
+                                    configureSession(
+                                        camera = camera,
+                                        surface = surface,
+                                        size = size,
+                                        characteristics = characteristics,
+                                        currentSharedCamera = currentSharedCamera,
+                                        sessionGen = sessionGen,
+                                        onSessionConfigured = onSessionConfigured,
+                                        fallbackStep = 1
+                                    )
+                                }
+                            ) {
+                                return
                             }
-                            return
                         } else if (fallbackStep == 1 && (size.width > 1280 || size.height > 720)) {
                             val map = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
                             val outputSizes = map?.getOutputSizes(SurfaceTexture::class.java) ?: emptyArray()
@@ -763,19 +788,21 @@ class HighSpeedCamera2Manager(private val context: Context) {
                                 activeTextureView?.get()?.surfaceTexture?.setDefaultBufferSize(hdSize.width, hdSize.height)
                             } catch (_: Throwable) {}
                             Log.w(TAG, "Retrying CameraCaptureSession with ${hdSize.width}x${hdSize.height} SharedCamera fallback...")
-                            backgroundHandler?.post {
-                                configureSession(
-                                    camera = camera,
-                                    surface = surface,
-                                    size = hdSize,
-                                    characteristics = characteristics,
-                                    currentSharedCamera = currentSharedCamera,
-                                    sessionGen = sessionGen,
-                                    onSessionConfigured = onSessionConfigured,
-                                    fallbackStep = 2
-                                )
+                            if (postToBackground {
+                                    configureSession(
+                                        camera = camera,
+                                        surface = surface,
+                                        size = hdSize,
+                                        characteristics = characteristics,
+                                        currentSharedCamera = currentSharedCamera,
+                                        sessionGen = sessionGen,
+                                        onSessionConfigured = onSessionConfigured,
+                                        fallbackStep = 2
+                                    )
+                                }
+                            ) {
+                                return
                             }
-                            return
                         }
                     }
                     onSessionConfigured?.invoke(false, size)
@@ -799,9 +826,8 @@ class HighSpeedCamera2Manager(private val context: Context) {
                 }
             }
             val executor = java.util.concurrent.Executor { command ->
-                val handler = backgroundHandler
-                if (!isClosed && handler != null && cameraGeneration.get() == sessionGen) {
-                    handler.post(command)
+                if (!isClosed && cameraGeneration.get() == sessionGen) {
+                    postToBackground { command.run() }
                 }
             }
             val sessionConfig = SessionConfiguration(
@@ -966,24 +992,43 @@ class HighSpeedCamera2Manager(private val context: Context) {
     }
 
     fun closeCamera() {
-        cameraGeneration.incrementAndGet()
-        isClosed = true
-        isOpening = false
-        isSharedCameraBoundToSession = false
-        arResumeTriggeredForSession.set(false)
-        isSwitchingCamera.set(false)
-        openRetryCount = 0
-        consecutiveCaptureFailures = 0
-        mainHandler.removeCallbacksAndMessages(null)
-        try {
-            backgroundHandler?.removeCallbacksAndMessages(null)
-            captureSession?.close()
+        val sessionToClose: CameraCaptureSession?
+        val deviceToClose: CameraDevice?
+        val surfaceToRelease: Surface?
+        val bgHandlerToClear: Handler?
+        synchronized(cameraStateLock) {
+            cameraGeneration.incrementAndGet()
+            isClosed = true
+            isOpening = false
+            isSharedCameraBoundToSession = false
+            arResumeTriggeredForSession.set(false)
+            isSwitchingCamera.set(false)
+            openRetryCount = 0
+            consecutiveCaptureFailures = 0
+            sessionToClose = captureSession
             captureSession = null
-            cameraDevice?.close()
+            deviceToClose = cameraDevice
             cameraDevice = null
-            previewSurface?.release()
+            surfaceToRelease = previewSurface
             previewSurface = null
             previewRequestBuilder = null
+            bgHandlerToClear = backgroundHandler
+        }
+        mainHandler.removeCallbacksAndMessages(null)
+        try {
+            bgHandlerToClear?.removeCallbacksAndMessages(null)
+            try {
+                sessionToClose?.stopRepeating()
+            } catch (_: Throwable) {}
+            try {
+                sessionToClose?.close()
+            } catch (_: Throwable) {}
+            try {
+                deviceToClose?.close()
+            } catch (_: Throwable) {}
+            try {
+                surfaceToRelease?.release()
+            } catch (_: Throwable) {}
         } catch (e: Throwable) {
             Log.w(TAG, "Error closing camera: ${e.message}")
         } finally {
