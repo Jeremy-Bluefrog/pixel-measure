@@ -201,6 +201,59 @@ class ModernArEngine(private val context: Context) {
     private val scratchRayHitOut = DoubleArray(4)
     private var cachedDepthConfidencePercent: Int = -1
     private var cachedCenterDepthMeters: Float = -1f
+    private var cachedRawDepthRoiValid: Boolean = false
+    private var cachedRawDepthInlierRatio: Float = -1f
+    private var cachedRawDepthFitDistance: Float = -1f
+    private var lastRoiSampleX: Float = -1f
+    private var lastRoiSampleY: Float = -1f
+    private var lastRoiSampleWasTap: Boolean = false
+    private val cachedRawDepthHitPoseTrans = FloatArray(3)
+    private val cachedRawDepthNormal = FloatArray(3)
+    private val roiNormCoords = FloatArray(50)
+    private val roiViewCoords = FloatArray(50)
+    private val roiWorldX = DoubleArray(25)
+    private val roiWorldY = DoubleArray(25)
+    private val roiWorldZ = DoubleArray(25)
+    private val roiWeights = DoubleArray(25)
+    private val roiValidFlags = BooleanArray(25)
+    private val roiPlaneOut7 = DoubleArray(7)
+    private val roiHitOut4 = DoubleArray(4)
+
+    // Zero-alloc 4-slot temporal Raw Depth ROI ring buffer for smoothing + sparse dropout bridging
+    private val depthRingCapacity = 4
+    private var depthRingHead = 0
+    private var depthRingCount = 0
+    private val ringTimestampsMs = LongArray(4)
+    private val ringHitX = FloatArray(4)
+    private val ringHitY = FloatArray(4)
+    private val ringHitZ = FloatArray(4)
+    private val ringNormX = FloatArray(4)
+    private val ringNormY = FloatArray(4)
+    private val ringNormZ = FloatArray(4)
+    private val ringCamX = FloatArray(4)
+    private val ringCamY = FloatArray(4)
+    private val ringCamZ = FloatArray(4)
+    private val ringTargetX = FloatArray(4)
+    private val ringTargetY = FloatArray(4)
+    private val ringConfPct = IntArray(4)
+    private val ringInlierRatio = FloatArray(4)
+
+    // Throttled zero-alloc scratch buffers for Sobel optical edge snapping & intrinsics fallback
+    private var lastEdgeSnapFrame = -10
+    private var lastEdgeSnapValid = false
+    private var lastEdgeSnapViewX = 0f
+    private var lastEdgeSnapViewY = 0f
+    private var lastEdgeQueryViewX = -1f
+    private var lastEdgeQueryViewY = -1f
+    private val edgeQueryImageXY = FloatArray(2)
+    private val edgeBestImageXY = FloatArray(2)
+    private val edgeBestViewXY = FloatArray(2)
+    private val intrinsicsFocal = FloatArray(2)
+    private val intrinsicsPrincipal = FloatArray(2)
+    private val intrinsicsDims = IntArray(2)
+    private val intrinsicsImgXY = FloatArray(2)
+
+    private val scratchQuatRot = FloatArray(4)
     private val neighborDx = floatArrayOf(-4f, 4f, 0f, 0f)
     private val neighborDy = floatArrayOf(0f, 0f, -4f, 4f)
     private val vMatrixPool = Array(2) { FloatArray(16) }
@@ -563,7 +616,7 @@ class ModernArEngine(private val context: Context) {
             // Per official ARCore docs, StereoCameraUsage must be DO_NOT_USE when SharedCamera is enabled.
             try {
                 val desiredFpsFlag = if (preferHighFps) CameraConfig.TargetFps.TARGET_FPS_60 else CameraConfig.TargetFps.TARGET_FPS_30
-                val isSharedSession = try { newSession.sharedCamera != null } catch (_: Throwable) { false }
+                val isSharedSession = try { newSession.sharedCamera; true } catch (_: Throwable) { false }
                 val fpsFilter = CameraConfigFilter(newSession).apply {
                     facingDirection = CameraConfig.FacingDirection.BACK
                     targetFps = EnumSet.of(desiredFpsFlag)
@@ -621,7 +674,7 @@ class ModernArEngine(private val context: Context) {
             selectedCameraImageSize = try { newSession.cameraConfig.textureSize } catch (_: Throwable) { null }
             selectedCameraFpsRange = try { newSession.cameraConfig.fpsRange } catch (_: Throwable) { null }
 
-            val isSharedSession = try { newSession.sharedCamera != null } catch (_: Throwable) { false }
+            val isSharedSession = try { newSession.sharedCamera; true } catch (_: Throwable) { false }
             val configured = configureSessionWithFallback(newSession, isSharedSession)
             isExposeHardwareBufferActive = configured.textureUpdateMode == Config.TextureUpdateMode.EXPOSE_HARDWARE_BUFFER
 
@@ -705,32 +758,45 @@ class ModernArEngine(private val context: Context) {
     }
 
     private fun configureSessionWithFallback(newSession: Session, isSharedSession: Boolean): Config {
-        val depthSupported = allowDepthMode && try {
+        val autoDepthSupported = allowDepthMode && try {
             newSession.isDepthModeSupported(Config.DepthMode.AUTOMATIC)
         } catch (_: Throwable) {
             false
+        }
+        val rawDepthSupported = allowDepthMode && try {
+            newSession.isDepthModeSupported(Config.DepthMode.RAW_DEPTH_ONLY)
+        } catch (_: Throwable) {
+            false
+        }
+        val preferredDepthMode = when {
+            autoDepthSupported -> Config.DepthMode.AUTOMATIC
+            rawDepthSupported -> Config.DepthMode.RAW_DEPTH_ONLY
+            else -> Config.DepthMode.DISABLED
         }
 
         // Google ARCore SharedCamera requires BIND_TO_TEXTURE_EXTERNAL_OES + setCameraTextureName().
         // Attempting EXPOSE_HARDWARE_BUFFER with SharedCamera causes pipeline stall/starvation on Pixel.
         data class SessionAttempt(
             val textureMode: Config.TextureUpdateMode,
-            val useDepth: Boolean,
+            val depthMode: Config.DepthMode,
             val lightMode: Config.LightEstimationMode,
             val instantPlacement: Config.InstantPlacementMode
         )
 
-        val baseAttempts = listOf(
-            SessionAttempt(Config.TextureUpdateMode.BIND_TO_TEXTURE_EXTERNAL_OES, depthSupported, Config.LightEstimationMode.ENVIRONMENTAL_HDR, Config.InstantPlacementMode.LOCAL_Y_UP),
-            SessionAttempt(Config.TextureUpdateMode.BIND_TO_TEXTURE_EXTERNAL_OES, depthSupported, Config.LightEstimationMode.AMBIENT_INTENSITY, Config.InstantPlacementMode.LOCAL_Y_UP),
-            SessionAttempt(Config.TextureUpdateMode.BIND_TO_TEXTURE_EXTERNAL_OES, false, Config.LightEstimationMode.AMBIENT_INTENSITY, Config.InstantPlacementMode.LOCAL_Y_UP),
-            SessionAttempt(Config.TextureUpdateMode.BIND_TO_TEXTURE_EXTERNAL_OES, false, Config.LightEstimationMode.AMBIENT_INTENSITY, Config.InstantPlacementMode.DISABLED)
-        )
+        val baseAttempts = buildList {
+            add(SessionAttempt(Config.TextureUpdateMode.BIND_TO_TEXTURE_EXTERNAL_OES, preferredDepthMode, Config.LightEstimationMode.ENVIRONMENTAL_HDR, Config.InstantPlacementMode.LOCAL_Y_UP))
+            add(SessionAttempt(Config.TextureUpdateMode.BIND_TO_TEXTURE_EXTERNAL_OES, preferredDepthMode, Config.LightEstimationMode.AMBIENT_INTENSITY, Config.InstantPlacementMode.LOCAL_Y_UP))
+            if (preferredDepthMode == Config.DepthMode.AUTOMATIC && rawDepthSupported) {
+                add(SessionAttempt(Config.TextureUpdateMode.BIND_TO_TEXTURE_EXTERNAL_OES, Config.DepthMode.RAW_DEPTH_ONLY, Config.LightEstimationMode.AMBIENT_INTENSITY, Config.InstantPlacementMode.LOCAL_Y_UP))
+            }
+            add(SessionAttempt(Config.TextureUpdateMode.BIND_TO_TEXTURE_EXTERNAL_OES, Config.DepthMode.DISABLED, Config.LightEstimationMode.AMBIENT_INTENSITY, Config.InstantPlacementMode.LOCAL_Y_UP))
+            add(SessionAttempt(Config.TextureUpdateMode.BIND_TO_TEXTURE_EXTERNAL_OES, Config.DepthMode.DISABLED, Config.LightEstimationMode.AMBIENT_INTENSITY, Config.InstantPlacementMode.DISABLED))
+        }
         val attempts = if (isSharedSession) {
             baseAttempts
         } else {
             listOf(
-                SessionAttempt(Config.TextureUpdateMode.EXPOSE_HARDWARE_BUFFER, depthSupported, Config.LightEstimationMode.ENVIRONMENTAL_HDR, Config.InstantPlacementMode.LOCAL_Y_UP)
+                SessionAttempt(Config.TextureUpdateMode.EXPOSE_HARDWARE_BUFFER, preferredDepthMode, Config.LightEstimationMode.ENVIRONMENTAL_HDR, Config.InstantPlacementMode.LOCAL_Y_UP)
             ) + baseAttempts
         }
 
@@ -742,15 +808,15 @@ class ModernArEngine(private val context: Context) {
                 config.updateMode = Config.UpdateMode.LATEST_CAMERA_IMAGE
                 config.planeFindingMode = Config.PlaneFindingMode.HORIZONTAL_AND_VERTICAL
                 config.lightEstimationMode = attempt.lightMode
-                config.depthMode = if (attempt.useDepth) Config.DepthMode.AUTOMATIC else Config.DepthMode.DISABLED
+                config.depthMode = attempt.depthMode
                 config.instantPlacementMode = attempt.instantPlacement
                 config.textureUpdateMode = attempt.textureMode
                 newSession.configure(config)
-                isDepthModeActive = (config.depthMode == Config.DepthMode.AUTOMATIC)
+                isDepthModeActive = (config.depthMode == Config.DepthMode.AUTOMATIC || config.depthMode == Config.DepthMode.RAW_DEPTH_ONLY)
                 return config
             } catch (t: Throwable) {
                 lastError = t
-                Log.w("ModernArEngine", "ARCore configure attempt failed (tex=${attempt.textureMode}, depth=${attempt.useDepth}, light=${attempt.lightMode}, ip=${attempt.instantPlacement}): ${t.message}")
+                Log.w("ModernArEngine", "ARCore configure attempt failed (tex=${attempt.textureMode}, depth=${attempt.depthMode}, light=${attempt.lightMode}, ip=${attempt.instantPlacement}): ${t.message}")
             }
         }
         throw lastError ?: IllegalStateException("Unable to configure ARCore session")
@@ -765,15 +831,17 @@ class ModernArEngine(private val context: Context) {
             val currentSession = session ?: return
             try {
                 val config = currentSession.config
-                val desiredDepth = if (allowDepth && currentSession.isDepthModeSupported(Config.DepthMode.AUTOMATIC)) {
-                    Config.DepthMode.AUTOMATIC
-                } else {
-                    Config.DepthMode.DISABLED
+                val desiredDepth = when {
+                    !allowDepth -> Config.DepthMode.DISABLED
+                    currentSession.isDepthModeSupported(Config.DepthMode.AUTOMATIC) -> Config.DepthMode.AUTOMATIC
+                    currentSession.isDepthModeSupported(Config.DepthMode.RAW_DEPTH_ONLY) -> Config.DepthMode.RAW_DEPTH_ONLY
+                    else -> Config.DepthMode.DISABLED
                 }
                 if (config.depthMode != desiredDepth) {
                     config.depthMode = desiredDepth
                     currentSession.configure(config)
-                    isDepthModeActive = (desiredDepth == Config.DepthMode.AUTOMATIC)
+                    isDepthModeActive = (desiredDepth == Config.DepthMode.AUTOMATIC || desiredDepth == Config.DepthMode.RAW_DEPTH_ONLY)
+                    if (!isDepthModeActive) resetTemporalDepthBuffer()
                     Log.i("ModernArEngine", "Adjusted ARCore DepthMode=$desiredDepth for thermal/performance policy.")
                 }
             } catch (t: Throwable) {
@@ -894,11 +962,26 @@ class ModernArEngine(private val context: Context) {
         }
     }
 
+    fun resetTemporalDepthBuffer() {
+        depthRingHead = 0
+        depthRingCount = 0
+        cachedRawDepthRoiValid = false
+        cachedRawDepthInlierRatio = -1f
+        cachedRawDepthFitDistance = -1f
+        cachedDepthConfidencePercent = -1
+        cachedCenterDepthMeters = -1f
+        lastEdgeSnapFrame = -10
+        lastEdgeSnapValid = false
+        lastEdgeQueryViewX = -1f
+        lastEdgeQueryViewY = -1f
+    }
+
     private fun resetTransientMotionState() {
         lastCameraPose = null
         lastFrameTimeNs = 0L
         smoothedSpeedMps = 0.05f
         aimMissCounter = 0
+        resetTemporalDepthBuffer()
     }
 
     fun pause() {
@@ -1060,27 +1143,14 @@ class ModernArEngine(private val context: Context) {
         }
     }
 
-    /**
-     * Unprojects screen pixel (x, y) into a normalized world-space ray stored in
-     * [scratchRayOrigin] and [scratchRayDir]. Returns true if valid.
-     */
-    private fun computeWorldRayForPixel(camera: Camera, x: Float, y: Float): Boolean {
-        if (viewportWidth <= 0 || viewportHeight <= 0) return false
-        val cameraPose = camera.pose
-        val camX = cameraPose.tx()
-        val camY = cameraPose.ty()
-        val camZ = cameraPose.tz()
-
-        camera.getProjectionMatrix(reusablePMatrix, 0, 0.05f, 50.0f)
-        val p00 = reusablePMatrix[0]
-        val p11 = reusablePMatrix[5]
-        if (kotlin.math.abs(p00) <= 1e-4f || kotlin.math.abs(p11) <= 1e-4f) return false
-
-        val ndcX = (2.0f * x / viewportWidth.toFloat()) - 1.0f
-        val ndcY = 1.0f - (2.0f * y / viewportHeight.toFloat())
-        val rayCamX = (ndcX + reusablePMatrix[8]) / p00
-        val rayCamY = (ndcY + reusablePMatrix[9]) / p11
-
+    private fun transformCameraRayToWorld(
+        cameraPose: Pose,
+        camX: Float,
+        camY: Float,
+        camZ: Float,
+        rayCamX: Float,
+        rayCamY: Float
+    ): Boolean {
         scratchPointIn[0] = rayCamX
         scratchPointIn[1] = rayCamY
         scratchPointIn[2] = -1.0f
@@ -1102,16 +1172,175 @@ class ModernArEngine(private val context: Context) {
     }
 
     /**
-     * Zero-alloc sample of ARCore Raw Depth confidence (0..100%) and metric depth (meters)
-     * at viewport pixel (x, y). Deterministically closes all native Image handles.
+     * Unprojects screen pixel (x, y) into a normalized world-space ray stored in
+     * [scratchRayOrigin] and [scratchRayDir]. Falls back to [Camera.getImageIntrinsics]
+     * if projection matrix values are degenerate. Returns true if valid.
+     */
+    private fun computeWorldRayForPixel(frame: Frame, camera: Camera, x: Float, y: Float): Boolean {
+        if (viewportWidth <= 0 || viewportHeight <= 0) return false
+        val cameraPose = camera.pose
+        val camX = cameraPose.tx()
+        val camY = cameraPose.ty()
+        val camZ = cameraPose.tz()
+
+        camera.getProjectionMatrix(reusablePMatrix, 0, 0.05f, 50.0f)
+        val p00 = reusablePMatrix[0]
+        val p11 = reusablePMatrix[5]
+        if (kotlin.math.abs(p00) <= 1e-4f || kotlin.math.abs(p11) <= 1e-4f) {
+            return try {
+                val intrinsics = camera.imageIntrinsics
+                intrinsics.getFocalLength(intrinsicsFocal, 0)
+                intrinsics.getPrincipalPoint(intrinsicsPrincipal, 0)
+                intrinsics.getImageDimensions(intrinsicsDims, 0)
+                val fx = intrinsicsFocal[0]
+                val fy = intrinsicsFocal[1]
+                if (fx <= 1e-3f || fy <= 1e-3f) return false
+                scratchViewXY[0] = x
+                scratchViewXY[1] = y
+                frame.transformCoordinates2d(
+                    Coordinates2d.VIEW,
+                    scratchViewXY,
+                    Coordinates2d.IMAGE_PIXELS,
+                    intrinsicsImgXY
+                )
+                val rayCamX = (intrinsicsImgXY[0] - intrinsicsPrincipal[0]) / fx
+                val rayCamY = -(intrinsicsImgXY[1] - intrinsicsPrincipal[1]) / fy
+                transformCameraRayToWorld(cameraPose, camX, camY, camZ, rayCamX, rayCamY)
+            } catch (_: Throwable) {
+                false
+            }
+        }
+
+        val ndcX = (2.0f * x / viewportWidth.toFloat()) - 1.0f
+        val ndcY = 1.0f - (2.0f * y / viewportHeight.toFloat())
+        val rayCamX = (ndcX + reusablePMatrix[8]) / p00
+        val rayCamY = (ndcY + reusablePMatrix[9]) / p11
+
+        return transformCameraRayToWorld(cameraPose, camX, camY, camZ, rayCamX, rayCamY)
+    }
+
+    private fun pushTemporalDepthSlot(
+        nowMs: Long,
+        hx: Float,
+        hy: Float,
+        hz: Float,
+        nx: Float,
+        ny: Float,
+        nz: Float,
+        camX: Float,
+        camY: Float,
+        camZ: Float,
+        targetX: Float,
+        targetY: Float,
+        confPct: Int,
+        inlierRatio: Float
+    ) {
+        val idx = depthRingHead
+        ringTimestampsMs[idx] = nowMs
+        ringHitX[idx] = hx
+        ringHitY[idx] = hy
+        ringHitZ[idx] = hz
+        ringNormX[idx] = nx
+        ringNormY[idx] = ny
+        ringNormZ[idx] = nz
+        ringCamX[idx] = camX
+        ringCamY[idx] = camY
+        ringCamZ[idx] = camZ
+        ringTargetX[idx] = targetX
+        ringTargetY[idx] = targetY
+        ringConfPct[idx] = confPct
+        ringInlierRatio[idx] = inlierRatio
+        depthRingHead = (depthRingHead + 1) % depthRingCapacity
+        if (depthRingCount < depthRingCapacity) depthRingCount++
+    }
+
+    private fun tryBridgeFromTemporalDepthRing(frame: Frame, x: Float, y: Float, nowMs: Long): Boolean {
+        if (depthRingCount <= 0) return false
+        val latestIdx = (depthRingHead - 1 + depthRingCapacity) % depthRingCapacity
+        val ageMs = nowMs - ringTimestampsMs[latestIdx]
+        if (ageMs < 0L || ageMs > 350L) return false
+        if (kotlin.math.abs(x - ringTargetX[latestIdx]) > 12f || kotlin.math.abs(y - ringTargetY[latestIdx]) > 12f) {
+            return false
+        }
+        val camPose = frame.camera.pose
+        val dx = camPose.tx() - ringCamX[latestIdx]
+        val dy = camPose.ty() - ringCamY[latestIdx]
+        val dz = camPose.tz() - ringCamZ[latestIdx]
+        if (dx * dx + dy * dy + dz * dz > 0.03f * 0.03f) return false
+
+        if (!computeWorldRayForPixel(frame, frame.camera, x, y)) return false
+        if (!ArMath.rayPlaneIntersection(
+                scratchRayOrigin[0], scratchRayOrigin[1], scratchRayOrigin[2],
+                scratchRayDir[0], scratchRayDir[1], scratchRayDir[2],
+                ringHitX[latestIdx].toDouble(), ringHitY[latestIdx].toDouble(), ringHitZ[latestIdx].toDouble(),
+                ringNormX[latestIdx].toDouble(), ringNormY[latestIdx].toDouble(), ringNormZ[latestIdx].toDouble(),
+                minCosIncidence = 0.22,
+                minT = 0.12,
+                maxT = 6.5,
+                outHitXYZT = roiHitOut4
+            )
+        ) {
+            return false
+        }
+
+        cachedRawDepthNormal[0] = ringNormX[latestIdx]
+        cachedRawDepthNormal[1] = ringNormY[latestIdx]
+        cachedRawDepthNormal[2] = ringNormZ[latestIdx]
+        cachedRawDepthHitPoseTrans[0] = roiHitOut4[0].toFloat()
+        cachedRawDepthHitPoseTrans[1] = roiHitOut4[1].toFloat()
+        cachedRawDepthHitPoseTrans[2] = roiHitOut4[2].toFloat()
+        cachedRawDepthFitDistance = roiHitOut4[3].toFloat()
+        cachedRawDepthInlierRatio = ringInlierRatio[latestIdx]
+        if (cachedDepthConfidencePercent < 0) {
+            cachedDepthConfidencePercent = ringConfPct[latestIdx]
+        }
+        cachedRawDepthRoiValid = true
+        return true
+    }
+
+    /**
+     * Zero-alloc sample of a 5x5 ARCore Raw Depth ROI + Confidence patch centered at viewport
+     * pixel (x, y), batch-unprojected into 3D world space using real-time CameraIntrinsics /
+     * projection matrix, fitted via confidence-weighted RANSAC + Total Least Squares plane
+     * reconstruction, and smoothed across a 4-slot temporal ring buffer.
+     * Deterministically closes all native Image handles.
      */
     private fun sampleRawDepthAndConfidence(frame: Frame, x: Float, y: Float, forceSample: Boolean) {
         if (!isDepthModeActive || !isRawDepthConfidenceFilterEnabled) {
             cachedDepthConfidencePercent = -1
             cachedCenterDepthMeters = -1f
+            cachedRawDepthRoiValid = false
+            cachedRawDepthInlierRatio = -1f
             return
         }
-        if (!forceSample && (frameCounter % 3 != 0)) return
+        val camPose = frame.camera.pose
+        val nowMs = (frame.timestamp / 1_000_000L).let { if (it > 0L) it else System.currentTimeMillis() }
+
+        // Flush temporal depth ring if camera translated > 6cm or screen target moved > 14px
+        if (depthRingCount > 0) {
+            val latestIdx = (depthRingHead - 1 + depthRingCapacity) % depthRingCapacity
+            val cdx = camPose.tx() - ringCamX[latestIdx]
+            val cdy = camPose.ty() - ringCamY[latestIdx]
+            val cdz = camPose.tz() - ringCamZ[latestIdx]
+            if (cdx * cdx + cdy * cdy + cdz * cdz > 0.06f * 0.06f ||
+                kotlin.math.abs(x - ringTargetX[latestIdx]) > 14f ||
+                kotlin.math.abs(y - ringTargetY[latestIdx]) > 14f
+            ) {
+                depthRingCount = 0
+                depthRingHead = 0
+            }
+        }
+
+        val sameTarget = kotlin.math.abs(x - lastRoiSampleX) < 8f && kotlin.math.abs(y - lastRoiSampleY) < 8f
+        if (!forceSample && !lastRoiSampleWasTap && sameTarget && (frameCounter % 2 != 0)) {
+            return
+        }
+        lastRoiSampleX = x
+        lastRoiSampleY = y
+        lastRoiSampleWasTap = forceSample
+        cachedRawDepthRoiValid = false
+        cachedRawDepthInlierRatio = -1f
+        cachedRawDepthFitDistance = -1f
 
         try {
             scratchViewXY[0] = x
@@ -1126,36 +1355,279 @@ class ModernArEngine(private val context: Context) {
             val normY = scratchDepthNormXY[1]
             if (normX !in 0f..1f || normY !in 0f..1f) return
 
+            var roiValidCount = 0
+            var roiConfSum = 0
+            var roiConfSamples = 0
+
             frame.acquireRawDepthConfidenceImage().use { confImg ->
-                val plane = confImg.planes.firstOrNull() ?: return@use
-                val px = (normX * confImg.width).toInt().coerceIn(0, (confImg.width - 1).coerceAtLeast(0))
-                val py = (normY * confImg.height).toInt().coerceIn(0, (confImg.height - 1).coerceAtLeast(0))
-                val offset = py * plane.rowStride + px * plane.pixelStride
-                val buf = plane.buffer
-                if (offset in 0 until buf.limit()) {
-                    val confByte = buf.get(offset).toInt() and 0xFF
-                    cachedDepthConfidencePercent = ((confByte * 100) / 255).coerceIn(0, 100)
+                val confPlane = confImg.planes.firstOrNull() ?: return@use
+                val cW = confImg.width
+                val cH = confImg.height
+                if (cW <= 0 || cH <= 0) return@use
+                val confBuf = confPlane.buffer
+
+                val cpx = (normX * cW).toInt().coerceIn(0, cW - 1)
+                val cpy = (normY * cH).toInt().coerceIn(0, cH - 1)
+                val cOff = cpy * confPlane.rowStride + cpx * confPlane.pixelStride
+                if (cOff in 0 until confBuf.limit()) {
+                    val cByte = confBuf.get(cOff).toInt() and 0xFF
+                    cachedDepthConfidencePercent = ((cByte * 100) / 255).coerceIn(0, 100)
+                }
+
+                frame.acquireRawDepthImage16Bits().use { depthImg ->
+                    val depthPlane = depthImg.planes.firstOrNull() ?: return@use
+                    val dW = depthImg.width
+                    val dH = depthImg.height
+                    if (dW <= 0 || dH <= 0) return@use
+                    val depthBuf = depthPlane.buffer
+
+                    val dcx = (normX * dW).toInt().coerceIn(0, dW - 1)
+                    val dcy = (normY * dH).toInt().coerceIn(0, dH - 1)
+                    val dCenterOff = dcy * depthPlane.rowStride + dcx * depthPlane.pixelStride
+                    if (dCenterOff >= 0 && dCenterOff + 1 < depthBuf.limit()) {
+                        val lo = depthBuf.get(dCenterOff).toInt() and 0xFF
+                        val hi = depthBuf.get(dCenterOff + 1).toInt() and 0xFF
+                        val depthMm = (hi shl 8) or lo
+                        cachedCenterDepthMeters = if (depthMm in 100..20000) depthMm / 1000f else -1f
+                    }
+
+                    // Sample a 5x5 patch (2px depth stride) around (dcx, dcy)
+                    var idx = 0
+                    for (dy in -2..2) {
+                        for (dx in -2..2) {
+                            val px = dcx + dx * 2
+                            val py = dcy + dy * 2
+                            roiValidFlags[idx] = false
+                            roiNormCoords[idx * 2] = normX
+                            roiNormCoords[idx * 2 + 1] = normY
+
+                            if (px in 0 until dW && py in 0 until dH) {
+                                val u = (px + 0.5f) / dW.toFloat()
+                                val v = (py + 0.5f) / dH.toFloat()
+                                val qcx = (u * cW).toInt().coerceIn(0, cW - 1)
+                                val qcy = (v * cH).toInt().coerceIn(0, cH - 1)
+                                val qOff = qcy * confPlane.rowStride + qcx * confPlane.pixelStride
+                                val dOff = py * depthPlane.rowStride + px * depthPlane.pixelStride
+
+                                if (qOff in 0 until confBuf.limit() && dOff >= 0 && dOff + 1 < depthBuf.limit()) {
+                                    val confByte = confBuf.get(qOff).toInt() and 0xFF
+                                    val confPct = (confByte * 100) / 255
+                                    roiConfSum += confPct
+                                    roiConfSamples++
+
+                                    if (confPct >= rawDepthConfidenceThreshold) {
+                                        val lo = depthBuf.get(dOff).toInt() and 0xFF
+                                        val hi = depthBuf.get(dOff + 1).toInt() and 0xFF
+                                        val depthMm = (hi shl 8) or lo
+                                        if (depthMm in 120..6500) {
+                                            val confNorm = confByte / 255.0
+                                            roiValidFlags[idx] = true
+                                            roiWorldZ[idx] = depthMm / 1000.0
+                                            roiWeights[idx] = confNorm * confNorm
+                                            roiNormCoords[idx * 2] = u
+                                            roiNormCoords[idx * 2 + 1] = v
+                                            roiValidCount++
+                                        }
+                                    }
+                                }
+                            }
+                            idx++
+                        }
+                    }
                 }
             }
 
-            frame.acquireRawDepthImage16Bits().use { depthImg ->
-                val plane = depthImg.planes.firstOrNull() ?: return@use
-                val px = (normX * depthImg.width).toInt().coerceIn(0, (depthImg.width - 1).coerceAtLeast(0))
-                val py = (normY * depthImg.height).toInt().coerceIn(0, (depthImg.height - 1).coerceAtLeast(0))
-                val offset = py * plane.rowStride + px * plane.pixelStride
-                val buf = plane.buffer
-                if (offset >= 0 && offset + 1 < buf.limit()) {
-                    val lo = buf.get(offset).toInt() and 0xFF
-                    val hi = buf.get(offset + 1).toInt() and 0xFF
-                    val depthMm = (hi shl 8) or lo
-                    cachedCenterDepthMeters = if (depthMm in 100..20000) depthMm / 1000f else -1f
+            if (roiConfSamples > 0 && cachedDepthConfidencePercent < 0) {
+                cachedDepthConfidencePercent = (roiConfSum / roiConfSamples).coerceIn(0, 100)
+            }
+
+            var fitSucceeded = false
+            if (roiValidCount >= 5 && viewportWidth > 0 && viewportHeight > 0 && computeWorldRayForPixel(frame, frame.camera, x, y)) {
+                frame.transformCoordinates2d(
+                    Coordinates2d.IMAGE_NORMALIZED,
+                    roiNormCoords,
+                    Coordinates2d.VIEW,
+                    roiViewCoords
+                )
+                val p00 = reusablePMatrix[0]
+                val p11 = reusablePMatrix[5]
+                if (kotlin.math.abs(p00) > 1e-4f && kotlin.math.abs(p11) > 1e-4f) {
+                    var packed = 0
+                    for (idx in 0 until 25) {
+                        if (!roiValidFlags[idx]) continue
+                        val vx = roiViewCoords[idx * 2]
+                        val vy = roiViewCoords[idx * 2 + 1]
+                        if (!vx.isFinite() || !vy.isFinite()) continue
+                        val depthM = roiWorldZ[idx]
+                        val ndcX = (2.0f * vx / viewportWidth.toFloat()) - 1.0f
+                        val ndcY = 1.0f - (2.0f * vy / viewportHeight.toFloat())
+                        val rayCamX = (ndcX + reusablePMatrix[8]) / p00
+                        val rayCamY = (ndcY + reusablePMatrix[9]) / p11
+                        scratchPointIn[0] = (rayCamX * depthM).toFloat()
+                        scratchPointIn[1] = (rayCamY * depthM).toFloat()
+                        scratchPointIn[2] = (-depthM).toFloat()
+                        camPose.transformPoint(scratchPointIn, 0, scratchPointOut, 0)
+                        roiWorldX[packed] = scratchPointOut[0].toDouble()
+                        roiWorldY[packed] = scratchPointOut[1].toDouble()
+                        roiWorldZ[packed] = scratchPointOut[2].toDouble()
+                        roiWeights[packed] = roiWeights[idx]
+                        packed++
+                    }
+
+                    val refDepth = if (cachedCenterDepthMeters > 0.2f) cachedCenterDepthMeters else 1.0f
+                    val inlierThresh = (0.015 + refDepth * 0.012).coerceIn(0.015, 0.045)
+                    if (packed >= 5 && ArMath.fitConfidenceWeightedLocalPlane(
+                            xs = roiWorldX,
+                            ys = roiWorldY,
+                            zs = roiWorldZ,
+                            weights = roiWeights,
+                            count = packed,
+                            rayOriginX = scratchRayOrigin[0],
+                            rayOriginY = scratchRayOrigin[1],
+                            rayOriginZ = scratchRayOrigin[2],
+                            rayDirX = scratchRayDir[0],
+                            rayDirY = scratchRayDir[1],
+                            rayDirZ = scratchRayDir[2],
+                            inlierDistThreshold = inlierThresh,
+                            minCosIncidence = 0.22,
+                            minT = 0.12,
+                            maxT = 6.5,
+                            outPlane7 = roiPlaneOut7,
+                            outHitXYZT = roiHitOut4
+                        )
+                    ) {
+                        val curNx = roiPlaneOut7[0].toFloat()
+                        val curNy = roiPlaneOut7[1].toFloat()
+                        val curNz = roiPlaneOut7[2].toFloat()
+                        val curHx = roiHitOut4[0].toFloat()
+                        val curHy = roiHitOut4[1].toFloat()
+                        val curHz = roiHitOut4[2].toFloat()
+                        val curInlier = roiPlaneOut7[6].toFloat()
+
+                        pushTemporalDepthSlot(
+                            nowMs = nowMs,
+                            hx = curHx, hy = curHy, hz = curHz,
+                            nx = curNx, ny = curNy, nz = curNz,
+                            camX = camPose.tx(), camY = camPose.ty(), camZ = camPose.tz(),
+                            targetX = x, targetY = y,
+                            confPct = cachedDepthConfidencePercent,
+                            inlierRatio = curInlier
+                        )
+
+                        // Temporally smooth consistent recent ROI planes (age <= 450ms, dot > 0.92)
+                        var sumNx = curNx.toDouble()
+                        var sumNy = curNy.toDouble()
+                        var sumNz = curNz.toDouble()
+                        var sumHx = curHx.toDouble()
+                        var sumHy = curHy.toDouble()
+                        var sumHz = curHz.toDouble()
+                        var wSum = 1.0
+                        for (s in 0 until depthRingCount) {
+                            val age = nowMs - ringTimestampsMs[s]
+                            if (age in 1L..450L) {
+                                val dot = ringNormX[s] * curNx + ringNormY[s] * curNy + ringNormZ[s] * curNz
+                                if (dot > 0.92f) {
+                                    val w = (1.0 - age / 600.0).coerceAtLeast(0.25)
+                                    sumNx += ringNormX[s] * w
+                                    sumNy += ringNormY[s] * w
+                                    sumNz += ringNormZ[s] * w
+                                    sumHx += ringHitX[s] * w
+                                    sumHy += ringHitY[s] * w
+                                    sumHz += ringHitZ[s] * w
+                                    wSum += w
+                                }
+                            }
+                        }
+
+                        val avgNLen = kotlin.math.sqrt(sumNx * sumNx + sumNy * sumNy + sumNz * sumNz)
+                        var usedSmoothed = false
+                        if (wSum > 1.05 && avgNLen > 1e-6) {
+                            val uNx = sumNx / avgNLen
+                            val uNy = sumNy / avgNLen
+                            val uNz = sumNz / avgNLen
+                            val cHx = sumHx / wSum
+                            val cHy = sumHy / wSum
+                            val cHz = sumHz / wSum
+                            if (ArMath.rayPlaneIntersection(
+                                    scratchRayOrigin[0], scratchRayOrigin[1], scratchRayOrigin[2],
+                                    scratchRayDir[0], scratchRayDir[1], scratchRayDir[2],
+                                    cHx, cHy, cHz,
+                                    uNx, uNy, uNz,
+                                    minCosIncidence = 0.22,
+                                    minT = 0.12,
+                                    maxT = 6.5,
+                                    outHitXYZT = roiHitOut4
+                                )
+                            ) {
+                                cachedRawDepthNormal[0] = uNx.toFloat()
+                                cachedRawDepthNormal[1] = uNy.toFloat()
+                                cachedRawDepthNormal[2] = uNz.toFloat()
+                                cachedRawDepthHitPoseTrans[0] = roiHitOut4[0].toFloat()
+                                cachedRawDepthHitPoseTrans[1] = roiHitOut4[1].toFloat()
+                                cachedRawDepthHitPoseTrans[2] = roiHitOut4[2].toFloat()
+                                cachedRawDepthFitDistance = roiHitOut4[3].toFloat()
+                                usedSmoothed = true
+                            }
+                        }
+                        if (!usedSmoothed) {
+                            cachedRawDepthNormal[0] = curNx
+                            cachedRawDepthNormal[1] = curNy
+                            cachedRawDepthNormal[2] = curNz
+                            cachedRawDepthHitPoseTrans[0] = curHx
+                            cachedRawDepthHitPoseTrans[1] = curHy
+                            cachedRawDepthHitPoseTrans[2] = curHz
+                            cachedRawDepthFitDistance = roiHitOut4[3].toFloat()
+                        }
+                        cachedRawDepthInlierRatio = curInlier
+                        cachedRawDepthRoiValid = true
+                        fitSucceeded = true
+                    }
                 }
             }
+            if (!fitSucceeded) {
+                tryBridgeFromTemporalDepthRing(frame, x, y, nowMs)
+            }
         } catch (_: NotYetAvailableException) {
-            // Normal during initial depth warmup
+            tryBridgeFromTemporalDepthRing(frame, x, y, nowMs)
         } catch (_: Throwable) {
             // Ignore unsupported raw depth devices safely
         }
+    }
+
+    /**
+     * Builds a Pose at ([px], [py], [pz]) whose local +Y axis aligns with unit normal ([nx], [ny], [nz]).
+     */
+    private fun buildPoseFromPointAndNormal(
+        px: Float,
+        py: Float,
+        pz: Float,
+        nx: Float,
+        ny: Float,
+        nz: Float
+    ): Pose {
+        scratchPoseTrans[0] = px
+        scratchPoseTrans[1] = py
+        scratchPoseTrans[2] = pz
+        if (ny > 0.9999f) {
+            scratchQuatRot[0] = 0f; scratchQuatRot[1] = 0f; scratchQuatRot[2] = 0f; scratchQuatRot[3] = 1f
+        } else if (ny < -0.9999f) {
+            scratchQuatRot[0] = 1f; scratchQuatRot[1] = 0f; scratchQuatRot[2] = 0f; scratchQuatRot[3] = 0f
+        } else {
+            val qx = nz
+            val qy = 0f
+            val qz = -nx
+            val qw = 1f + ny
+            val qLen = kotlin.math.sqrt(qx * qx + qy * qy + qz * qz + qw * qw)
+            if (qLen > 1e-6f) {
+                scratchQuatRot[0] = qx / qLen
+                scratchQuatRot[1] = qy / qLen
+                scratchQuatRot[2] = qz / qLen
+                scratchQuatRot[3] = qw / qLen
+            } else {
+                scratchQuatRot[0] = 0f; scratchQuatRot[1] = 0f; scratchQuatRot[2] = 0f; scratchQuatRot[3] = 1f
+            }
+        }
+        return Pose(scratchPoseTrans, scratchQuatRot)
     }
 
     /**
@@ -1175,6 +1647,78 @@ class ModernArEngine(private val context: Context) {
         }
     }
 
+    private fun resolveOpticalSobelEdgeSnap(
+        frame: Frame,
+        viewX: Float,
+        viewY: Float,
+        forceSample: Boolean
+    ): Boolean {
+        val targetMoved = kotlin.math.abs(viewX - lastEdgeQueryViewX) >= 6f ||
+            kotlin.math.abs(viewY - lastEdgeQueryViewY) >= 6f
+        if (!forceSample && !targetMoved && (frameCounter - lastEdgeSnapFrame) < 2) {
+            return lastEdgeSnapValid
+        }
+        lastEdgeQueryViewX = viewX
+        lastEdgeQueryViewY = viewY
+        lastEdgeSnapFrame = frameCounter
+
+        var snapped = false
+        try {
+            scratchViewXY[0] = viewX
+            scratchViewXY[1] = viewY
+            frame.transformCoordinates2d(
+                Coordinates2d.VIEW,
+                scratchViewXY,
+                Coordinates2d.IMAGE_PIXELS,
+                edgeQueryImageXY
+            )
+            val ix = edgeQueryImageXY[0]
+            val iy = edgeQueryImageXY[1]
+            if (ix.isFinite() && iy.isFinite()) {
+                frame.acquireCameraImage()?.use { camImg ->
+                    val yPlane = camImg.planes.firstOrNull() ?: return@use
+                    val gradMag = ArMath.findStrongestLocalEdgeXY(
+                        luma = yPlane.buffer,
+                        width = camImg.width,
+                        height = camImg.height,
+                        rowStride = yPlane.rowStride,
+                        pixelStride = yPlane.pixelStride,
+                        centerX = ix,
+                        centerY = iy,
+                        searchRadiusPx = 14,
+                        minGradientThreshold = 42f,
+                        outBestXY = edgeBestImageXY
+                    )
+                    if (gradMag > 0f) {
+                        frame.transformCoordinates2d(
+                            Coordinates2d.IMAGE_PIXELS,
+                            edgeBestImageXY,
+                            Coordinates2d.VIEW,
+                            edgeBestViewXY
+                        )
+                        val svx = edgeBestViewXY[0]
+                        val svy = edgeBestViewXY[1]
+                        if (svx.isFinite() && svy.isFinite()) {
+                            val dx = svx - viewX
+                            val dy = svy - viewY
+                            if (dx * dx + dy * dy <= 16f * 16f) {
+                                lastEdgeSnapViewX = svx.coerceIn(0f, viewportWidth.toFloat().coerceAtLeast(1f))
+                                lastEdgeSnapViewY = svy.coerceIn(0f, viewportHeight.toFloat().coerceAtLeast(1f))
+                                snapped = true
+                            }
+                        }
+                    }
+                }
+            }
+        } catch (_: NotYetAvailableException) {
+            // Expected briefly before CPU image stream is ready
+        } catch (_: Throwable) {
+            // Safe fallback if camera CPU image cannot be acquired on this frame
+        }
+        lastEdgeSnapValid = snapped
+        return snapped
+    }
+
     fun performHitTest(frame: Frame, x: Float, y: Float, createAnchor: Boolean = false): HitTestResult? {
         if (frame.camera.trackingState != TrackingState.TRACKING) {
             return null
@@ -1186,11 +1730,15 @@ class ModernArEngine(private val context: Context) {
             return null
         }
         try {
-            sampleRawDepthAndConfidence(frame, x, y, forceSample = createAnchor)
+            val isImageEdgeSnapped = resolveOpticalSobelEdgeSnap(frame, x, y, forceSample = createAnchor)
+            val effX = if (isImageEdgeSnapped) lastEdgeSnapViewX else x
+            val effY = if (isImageEdgeSnapped) lastEdgeSnapViewY else y
+
+            sampleRawDepthAndConfidence(frame, effX, effY, forceSample = createAnchor)
             val depthConf = cachedDepthConfidencePercent
             val depthConfPasses = !isRawDepthConfidenceFilterEnabled || depthConf < 0 || depthConf >= rawDepthConfidenceThreshold
 
-            val hits = frame.hitTest(x, y)
+            val hits = frame.hitTest(effX, effY)
 
             // Single-pass zero-allocation tier resolution over hit list (hits are sorted closest-first)
             var planePolygonHit: HitResult? = null
@@ -1244,7 +1792,7 @@ class ModernArEngine(private val context: Context) {
             var reprojectedCenterDistance = 0f
             if (planePolygonHit == null && depthHit == null && (createAnchor || aimMissCounter++ % 3 == 0)) {
                 for (n in 0 until 4) {
-                    val nHits = frame.hitTest(x + neighborDx[n], y + neighborDy[n])
+                    val nHits = frame.hitTest(effX + neighborDx[n], effY + neighborDy[n])
                     for (j in nHits.indices) {
                         val hit = nHits[j]
                         if (hit.distance in 0.05f..25.0f) {
@@ -1256,7 +1804,7 @@ class ModernArEngine(private val context: Context) {
                             ) {
                                 planePolygonHit = hit
                                 hasValidHit = true
-                                if (computeWorldRayForPixel(frame.camera, x, y)) {
+                                if (computeWorldRayForPixel(frame, frame.camera, effX, effY)) {
                                     val cPose = trackable.centerPose
                                     cPose.transformPoint(scratchNormalIn, 0, scratchNormalOut, 0)
                                     val nx = (scratchNormalOut[0] - cPose.tx()).toDouble()
@@ -1295,8 +1843,50 @@ class ModernArEngine(private val context: Context) {
             }
 
             val camPose = frame.camera.pose
+            val hasCenterRay = computeWorldRayForPixel(frame, frame.camera, effX, effY)
+            val roiInlierRatio = cachedRawDepthInlierRatio
 
-            // Foreground DepthPoint beats background Plane ONLY when Raw Depth confidence passes filter
+            // Fitted Raw Depth ROI local plane beats background PlanePolygon ONLY when significantly closer (foreground object),
+            // and beats unsmoothed depthHit / outside-polygon planeEstimatedHit.
+            val roiDepthBeatsPolygonPlane = cachedRawDepthRoiValid && depthConfPasses &&
+                (planePolygonHit == null || cachedRawDepthFitDistance < planePolygonHit.distance - 0.06f)
+
+            if (roiDepthBeatsPolygonPlane) {
+                val roiPose = buildPoseFromPointAndNormal(
+                    cachedRawDepthHitPoseTrans[0],
+                    cachedRawDepthHitPoseTrans[1],
+                    cachedRawDepthHitPoseTrans[2],
+                    cachedRawDepthNormal[0],
+                    cachedRawDepthNormal[1],
+                    cachedRawDepthNormal[2]
+                )
+                val cosIncidence = if (hasCenterRay) {
+                    ArMath.computeIncidenceCosine(
+                        scratchRayDir[0], scratchRayDir[1], scratchRayDir[2],
+                        cachedRawDepthNormal[0].toDouble(), cachedRawDepthNormal[1].toDouble(), cachedRawDepthNormal[2].toDouble()
+                    )
+                } else 1.0f
+                val anchor = if (createAnchor) {
+                    try { session?.createAnchor(roiPose) } catch (_: Throwable) { null }
+                } else null
+                return HitTestResult(
+                    pose = roiPose,
+                    anchor = anchor,
+                    hitType = HitType.DEPTH_POINT,
+                    distance = cachedRawDepthFitDistance,
+                    planeType = null,
+                    normalX = cachedRawDepthNormal[0],
+                    normalY = cachedRawDepthNormal[1],
+                    normalZ = cachedRawDepthNormal[2],
+                    hasSurfaceNormal = true,
+                    depthConfidencePercent = depthConf,
+                    incidenceCosine = cosIncidence,
+                    rawDepthInlierRatio = roiInlierRatio,
+                    isImageEdgeSnapped = isImageEdgeSnapped
+                )
+            }
+
+            // Foreground ARCore DepthPoint beats background Plane ONLY when Raw Depth confidence passes filter
             val depthBeatsPolygonPlane = depthHit != null && depthConfPasses &&
                 (planePolygonHit == null || depthHit.distance < planePolygonHit.distance - 0.08f)
 
@@ -1308,6 +1898,12 @@ class ModernArEngine(private val context: Context) {
                 val finalPose = reprojectedCenterPose ?: planePolygonHit.hitPose
                 val finalDistance = if (reprojectedCenterPose != null) reprojectedCenterDistance else planePolygonHit.distance
                 extractOrientedNormal(plane.centerPose, finalPose, camPose)
+                val cosIncidence = if (hasCenterRay) {
+                    ArMath.computeIncidenceCosine(
+                        scratchRayDir[0], scratchRayDir[1], scratchRayDir[2],
+                        scratchNormalOut[0].toDouble(), scratchNormalOut[1].toDouble(), scratchNormalOut[2].toDouble()
+                    )
+                } else 1.0f
 
                 val anchor = if (createAnchor) {
                     try {
@@ -1328,7 +1924,10 @@ class ModernArEngine(private val context: Context) {
                     normalY = scratchNormalOut[1],
                     normalZ = scratchNormalOut[2],
                     hasSurfaceNormal = true,
-                    depthConfidencePercent = depthConf
+                    depthConfidencePercent = depthConf,
+                    incidenceCosine = cosIncidence,
+                    rawDepthInlierRatio = roiInlierRatio,
+                    isImageEdgeSnapped = isImageEdgeSnapped
                 )
             }
 
@@ -1339,6 +1938,12 @@ class ModernArEngine(private val context: Context) {
 
                 if (depthHit != null && (depthBeatsPolygonPlane || depthBeatsEstimatedPlane)) {
                     extractOrientedNormal(depthHit.hitPose, depthHit.hitPose, camPose)
+                    val cosIncidence = if (hasCenterRay) {
+                        ArMath.computeIncidenceCosine(
+                            scratchRayDir[0], scratchRayDir[1], scratchRayDir[2],
+                            scratchNormalOut[0].toDouble(), scratchNormalOut[1].toDouble(), scratchNormalOut[2].toDouble()
+                        )
+                    } else 1.0f
                     val anchor = if (createAnchor) {
                         try { depthHit.createAnchor() } catch (e: Exception) { null }
                     } else null
@@ -1352,7 +1957,10 @@ class ModernArEngine(private val context: Context) {
                         normalY = scratchNormalOut[1],
                         normalZ = scratchNormalOut[2],
                         hasSurfaceNormal = true,
-                        depthConfidencePercent = depthConf
+                        depthConfidencePercent = depthConf,
+                        incidenceCosine = cosIncidence,
+                        rawDepthInlierRatio = roiInlierRatio,
+                        isImageEdgeSnapped = isImageEdgeSnapped
                     )
                 }
 
@@ -1364,6 +1972,12 @@ class ModernArEngine(private val context: Context) {
                     }
                     val finalPose = planeEstimatedHit.hitPose
                     extractOrientedNormal(plane.centerPose, finalPose, camPose)
+                    val cosIncidence = if (hasCenterRay) {
+                        ArMath.computeIncidenceCosine(
+                            scratchRayDir[0], scratchRayDir[1], scratchRayDir[2],
+                            scratchNormalOut[0].toDouble(), scratchNormalOut[1].toDouble(), scratchNormalOut[2].toDouble()
+                        )
+                    } else 1.0f
 
                     val anchor = if (createAnchor) {
                         try {
@@ -1384,13 +1998,22 @@ class ModernArEngine(private val context: Context) {
                         normalY = scratchNormalOut[1],
                         normalZ = scratchNormalOut[2],
                         hasSurfaceNormal = true,
-                        depthConfidencePercent = depthConf
+                        depthConfidencePercent = depthConf,
+                        incidenceCosine = cosIncidence,
+                        rawDepthInlierRatio = roiInlierRatio,
+                        isImageEdgeSnapped = isImageEdgeSnapped
                     )
                 }
 
                 // Depth Point fallback (only if confidence meets threshold or no other metric hit exists)
                 if (depthHit != null && (depthConfPasses || (instantHit == null && featurePointHit == null))) {
                     extractOrientedNormal(depthHit.hitPose, depthHit.hitPose, camPose)
+                    val cosIncidence = if (hasCenterRay) {
+                        ArMath.computeIncidenceCosine(
+                            scratchRayDir[0], scratchRayDir[1], scratchRayDir[2],
+                            scratchNormalOut[0].toDouble(), scratchNormalOut[1].toDouble(), scratchNormalOut[2].toDouble()
+                        )
+                    } else 1.0f
                     val anchor = if (createAnchor) {
                         try { depthHit.createAnchor() } catch (e: Exception) { null }
                     } else null
@@ -1404,7 +2027,10 @@ class ModernArEngine(private val context: Context) {
                         normalY = scratchNormalOut[1],
                         normalZ = scratchNormalOut[2],
                         hasSurfaceNormal = true,
-                        depthConfidencePercent = depthConf
+                        depthConfidencePercent = depthConf,
+                        incidenceCosine = cosIncidence,
+                        rawDepthInlierRatio = roiInlierRatio,
+                        isImageEdgeSnapped = isImageEdgeSnapped
                     )
                 }
 
@@ -1426,7 +2052,9 @@ class ModernArEngine(private val context: Context) {
                         normalY = 1f,
                         normalZ = 0f,
                         hasSurfaceNormal = false,
-                        depthConfidencePercent = depthConf
+                        depthConfidencePercent = depthConf,
+                        rawDepthInlierRatio = roiInlierRatio,
+                        isImageEdgeSnapped = isImageEdgeSnapped
                     )
                 }
 
@@ -1446,13 +2074,15 @@ class ModernArEngine(private val context: Context) {
                         normalY = 1f,
                         normalZ = 0f,
                         hasSurfaceNormal = false,
-                        depthConfidencePercent = depthConf
+                        depthConfidencePercent = depthConf,
+                        rawDepthInlierRatio = roiInlierRatio,
+                        isImageEdgeSnapped = isImageEdgeSnapped
                     )
                 }
             }
 
             // Tier 6: Bounded Mathematical Ray-Plane Surface Extrapolation (within local plane extent + margin)
-            val raycastPlaneHit = performPlaneRaycastIntersection(frame, x, y, createAnchor)
+            val raycastPlaneHit = performPlaneRaycastIntersection(frame, effX, effY, createAnchor, isImageEdgeSnapped)
             if (raycastPlaneHit != null) {
                 return raycastPlaneHit
             }
@@ -1461,7 +2091,7 @@ class ModernArEngine(private val context: Context) {
             val currentSession = session
             if (currentSession != null && currentSession.config.instantPlacementMode != Config.InstantPlacementMode.DISABLED) {
                 val instantHits = try {
-                    frame.hitTestInstantPlacement(x, y, 1.5f)
+                    frame.hitTestInstantPlacement(effX, effY, 1.5f)
                 } catch (_: Throwable) {
                     emptyList()
                 }
@@ -1485,7 +2115,8 @@ class ModernArEngine(private val context: Context) {
                         distance = firstInstant.distance,
                         planeType = null,
                         isApproximatePlacement = isApprox,
-                        depthConfidencePercent = depthConf
+                        depthConfidencePercent = depthConf,
+                        isImageEdgeSnapped = isImageEdgeSnapped
                     )
                 }
             }
@@ -1501,7 +2132,13 @@ class ModernArEngine(private val context: Context) {
      * Restricts intersection to within 0.35m of the detected plane bounding extents, 8m range,
      * and >= 10.4° grazing angle (cos >= 0.18) to avoid shallow-angle distance blowup.
      */
-    private fun performPlaneRaycastIntersection(frame: Frame, x: Float, y: Float, createAnchor: Boolean): HitTestResult? {
+    private fun performPlaneRaycastIntersection(
+        frame: Frame,
+        x: Float,
+        y: Float,
+        createAnchor: Boolean,
+        isImageEdgeSnapped: Boolean = false
+    ): HitTestResult? {
         val currentSession = session ?: return null
         val planes = currentSession.getAllTrackables(Plane::class.java)
         if (planes.isEmpty()) return null
@@ -1512,7 +2149,7 @@ class ModernArEngine(private val context: Context) {
         val camY = cameraPose.ty()
         val camZ = cameraPose.tz()
 
-        if (!computeWorldRayForPixel(camera, x, y)) {
+        if (!computeWorldRayForPixel(frame, camera, x, y)) {
             return null
         }
         val rNormX = scratchRayDir[0].toFloat()
@@ -1540,20 +2177,21 @@ class ModernArEngine(private val context: Context) {
             val nz = scratchNormalOut[2] - pz
 
             val denom = rNormX * nx + rNormY * ny + rNormZ * nz
-            if (kotlin.math.abs(denom) > 0.18f) {
+            if (kotlin.math.abs(denom) > 0.25f) {
                 val t = ((px - camX) * nx + (py - camY) * ny + (pz - camZ) * nz) / denom
-                if (t in 0.15f..8.0f && t < bestT) {
+                if (t in 0.15f..5.5f && t < bestT) {
                     val hx = camX + t * rNormX
                     val hy = camY + t * rNormY
                     val hz = camZ + t * rNormZ
 
-                    // Check bounds in plane-local XZ coordinates so extrapolation stays near detected plane
+                    // Check bounds in plane-local XZ coordinates with range-decayed extrapolation margin
+                    val decayMargin = kotlin.math.min(maxExtrapolationMargin, (0.35f / t.coerceAtLeast(1.0f)))
                     scratchPointIn[0] = hx
                     scratchPointIn[1] = hy
                     scratchPointIn[2] = hz
                     cPose.inverse().transformPoint(scratchPointIn, 0, scratchPointOut, 0)
-                    val maxHalfX = (plane.extentX * 0.5f) + maxExtrapolationMargin
-                    val maxHalfZ = (plane.extentZ * 0.5f) + maxExtrapolationMargin
+                    val maxHalfX = (plane.extentX * 0.5f) + decayMargin
+                    val maxHalfZ = (plane.extentZ * 0.5f) + decayMargin
                     if (kotlin.math.abs(scratchPointOut[0]) <= maxHalfX &&
                         kotlin.math.abs(scratchPointOut[2]) <= maxHalfZ
                     ) {
@@ -1567,13 +2205,17 @@ class ModernArEngine(private val context: Context) {
             }
         }
 
-        if (bestPlane != null && bestT <= 8.0f) {
+        if (bestPlane != null && bestT <= 5.5f) {
             scratchPoseTrans[0] = bestHitX
             scratchPoseTrans[1] = bestHitY
             scratchPoseTrans[2] = bestHitZ
             val finalPose = Pose(scratchPoseTrans, bestPlane.centerPose.rotationQuaternion)
 
             extractOrientedNormal(bestPlane.centerPose, finalPose, cameraPose)
+            val cosIncidence = ArMath.computeIncidenceCosine(
+                rNormX.toDouble(), rNormY.toDouble(), rNormZ.toDouble(),
+                scratchNormalOut[0].toDouble(), scratchNormalOut[1].toDouble(), scratchNormalOut[2].toDouble()
+            )
 
             val anchor = if (createAnchor) {
                 try {
@@ -1593,7 +2235,10 @@ class ModernArEngine(private val context: Context) {
                 normalY = scratchNormalOut[1],
                 normalZ = scratchNormalOut[2],
                 hasSurfaceNormal = true,
-                depthConfidencePercent = cachedDepthConfidencePercent
+                depthConfidencePercent = cachedDepthConfidencePercent,
+                incidenceCosine = cosIncidence,
+                rawDepthInlierRatio = cachedRawDepthInlierRatio,
+                isImageEdgeSnapped = isImageEdgeSnapped
             )
         }
         return null
@@ -1777,16 +2422,28 @@ class ModernArEngine(private val context: Context) {
             1.0f
         }
 
-        // Probe Depth API readiness every 15 frames and always close native Image immediately
+        // Probe Depth / Raw Depth API readiness every 15 frames and always close native Image immediately
         if (isDepthModeActive && frameCounter % 15 == 0) {
             isDepthImageAvailable = try {
                 frame.acquireDepthImage16Bits().use { depthImg ->
                     depthImg.width > 0 && depthImg.height > 0
                 }
             } catch (_: NotYetAvailableException) {
-                false
+                try {
+                    frame.acquireRawDepthImage16Bits().use { rawImg ->
+                        rawImg.width > 0 && rawImg.height > 0
+                    }
+                } catch (_: Throwable) {
+                    false
+                }
             } catch (_: Throwable) {
-                false
+                try {
+                    frame.acquireRawDepthImage16Bits().use { rawImg ->
+                        rawImg.width > 0 && rawImg.height > 0
+                    }
+                } catch (_: Throwable) {
+                    false
+                }
             }
         }
 
@@ -1959,7 +2616,10 @@ data class HitTestResult(
     val normalY: Float = 1f,
     val normalZ: Float = 0f,
     val hasSurfaceNormal: Boolean = false,
-    val depthConfidencePercent: Int = -1
+    val depthConfidencePercent: Int = -1,
+    val incidenceCosine: Float = 1.0f,
+    val rawDepthInlierRatio: Float = -1f,
+    val isImageEdgeSnapped: Boolean = false
 )
 
 /**

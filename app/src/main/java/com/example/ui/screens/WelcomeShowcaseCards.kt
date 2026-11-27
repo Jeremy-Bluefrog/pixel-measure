@@ -43,6 +43,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -50,25 +51,21 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.foundation.border
 import com.example.ui.components.BlurDirection
 import com.example.ui.components.GradientBlurBackdropState
-import com.example.ui.components.gradientBlurSource
-import com.example.ui.components.hardwareBackdropBlur
 import com.example.ui.components.progressiveGlass
-import com.example.ui.components.rememberGradientBlurBackdropState
 import com.example.ui.i18n.tr
 import com.example.ui.theme.ExpressiveCloverShape
 import com.example.ui.theme.ExpressiveCookie8Shape
 import com.example.ui.theme.ExpressiveSquircle
 import com.example.ui.theme.GoogleSansRounded
 import com.example.ui.theme.LocalAppDarkTheme
-import kotlin.math.PI
 import kotlin.math.cos
 import kotlin.math.sin
 
 /**
- * Slide 1 Showcase: Official Material 3 Rounded Iconography (Material Symbols)
- * layered over blurred ambient bokeh and frosted glass pills.
+ * Slide 1 Showcase: Enhanced Material 3 AR Spatial Reticle & 3D Glowing Orbit
  */
 @Composable
 internal fun WelcomeArHeroShowcase(
@@ -77,10 +74,10 @@ internal fun WelcomeArHeroShowcase(
 ) {
     val infinite = rememberInfiniteTransition(label = "welcomeHeroAnim")
     val pulse by infinite.animateFloat(
-        initialValue = 0.94f,
-        targetValue = 1.06f,
+        initialValue = 0.92f,
+        targetValue = 1.08f,
         animationSpec = infiniteRepeatable(
-            animation = tween(1600, easing = FastOutSlowInEasing),
+            animation = tween(1800, easing = FastOutSlowInEasing),
             repeatMode = RepeatMode.Reverse
         ),
         label = "reticlePulse"
@@ -89,18 +86,26 @@ internal fun WelcomeArHeroShowcase(
         initialValue = 0f,
         targetValue = 360f,
         animationSpec = infiniteRepeatable(
-            animation = tween(7000, easing = LinearEasing),
+            animation = tween(6000, easing = LinearEasing),
             repeatMode = RepeatMode.Restart
         ),
         label = "ringRotation"
+    )
+    val orbitAngle by infinite.animateFloat(
+        initialValue = 0f,
+        targetValue = 360f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(10000, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart
+        ),
+        label = "orbitAngle"
     )
 
     val isDark = LocalAppDarkTheme.current
     val primaryColor = MaterialTheme.colorScheme.primary
     val secondaryColor = MaterialTheme.colorScheme.secondary
     val tertiaryColor = MaterialTheme.colorScheme.tertiary
-    val cardShape = RoundedCornerShape(30.dp)
-    val innerGlassState = rememberGradientBlurBackdropState()
+    val cardShape = RoundedCornerShape(32.dp)
 
     Card(
         shape = cardShape,
@@ -108,157 +113,189 @@ internal fun WelcomeArHeroShowcase(
         elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
         modifier = modifier
             .fillMaxWidth()
-            .height(210.dp)
+            .height(220.dp)
             .progressiveGlass(
                 backdropState = backdropState,
                 direction = BlurDirection.RADIAL_EDGE,
-                maxBlurRadius = 26.dp,
-                tintColor = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = if (isDark) 0.52f else 0.68f),
+                maxBlurRadius = 28.dp,
+                tintColor = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = if (isDark) 0.54f else 0.70f),
                 shape = cardShape,
-                borderColor = if (isDark) Color.White.copy(alpha = 0.14f) else Color.White.copy(alpha = 0.65f)
+                borderColor = if (isDark) Color.White.copy(alpha = 0.16f) else Color.White.copy(alpha = 0.70f)
             )
             .testTag("welcome_hero_card")
     ) {
         Box(modifier = Modifier.fillMaxSize()) {
-            // Background blurred bokeh & animated measurement rings sampled by pill glass
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .gradientBlurSource(innerGlassState)
-            ) {
-                Canvas(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .hardwareBackdropBlur(enabled = true, blurRadius = 64f)
-                ) {
+            Box(modifier = Modifier.fillMaxSize()) {
+                // Multi-stop glowing ambient bokeh backdrop (radial gradients already feather smoothly to 0 alpha)
+                Canvas(modifier = Modifier.fillMaxSize()) {
                     drawCircle(
-                        color = primaryColor.copy(alpha = if (isDark) 0.34f else 0.24f),
-                        radius = size.minDimension * 0.42f,
+                        brush = Brush.radialGradient(
+                            colors = listOf(
+                                primaryColor.copy(alpha = if (isDark) 0.36f else 0.24f),
+                                primaryColor.copy(alpha = if (isDark) 0.14f else 0.09f),
+                                primaryColor.copy(alpha = 0f)
+                            ),
+                            center = Offset(size.width * 0.28f, size.height * 0.32f),
+                            radius = size.minDimension * 0.62f
+                        ),
+                        radius = size.minDimension * 0.62f,
                         center = Offset(size.width * 0.28f, size.height * 0.32f)
                     )
                     drawCircle(
-                        color = tertiaryColor.copy(alpha = if (isDark) 0.28f else 0.20f),
-                        radius = size.minDimension * 0.38f,
+                        brush = Brush.radialGradient(
+                            colors = listOf(
+                                tertiaryColor.copy(alpha = if (isDark) 0.32f else 0.20f),
+                                tertiaryColor.copy(alpha = if (isDark) 0.12f else 0.08f),
+                                tertiaryColor.copy(alpha = 0f)
+                            ),
+                            center = Offset(size.width * 0.76f, size.height * 0.62f),
+                            radius = size.minDimension * 0.58f
+                        ),
+                        radius = size.minDimension * 0.58f,
                         center = Offset(size.width * 0.76f, size.height * 0.62f)
-                    )
-                    drawCircle(
-                        color = secondaryColor.copy(alpha = if (isDark) 0.22f else 0.16f),
-                        radius = size.minDimension * 0.28f,
-                        center = Offset(size.width * 0.55f, size.height * 0.20f)
                     )
                 }
 
+                // Advanced 3D AR Reticle & Orbiting Particles Canvas
                 Canvas(modifier = Modifier.fillMaxSize()) {
-                    val center = Offset(size.width / 2f, size.height * 0.43f)
-                    val baseRadius = 58.dp.toPx() * pulse
+                    val center = Offset(size.width / 2f, size.height * 0.44f)
+                    val baseRadius = 62.dp.toPx() * pulse
 
+                    // Outer glowing guide rings
                     drawCircle(
-                        color = primaryColor.copy(alpha = 0.16f),
-                        radius = baseRadius * 1.24f,
+                        color = primaryColor.copy(alpha = 0.18f),
+                        radius = baseRadius * 1.35f,
                         center = center,
                         style = Stroke(width = 1.5.dp.toPx())
                     )
+                    drawCircle(
+                        color = secondaryColor.copy(alpha = 0.12f),
+                        radius = baseRadius * 1.65f,
+                        center = center,
+                        style = Stroke(width = 1.dp.toPx())
+                    )
+
+                    // Rotating primary sweep arc
                     drawArc(
-                        color = primaryColor.copy(alpha = 0.70f),
+                        brush = Brush.sweepGradient(
+                            colors = listOf(
+                                primaryColor.copy(alpha = 0.05f),
+                                primaryColor.copy(alpha = 0.85f),
+                                primaryColor.copy(alpha = 0.05f)
+                            ),
+                            center = center
+                        ),
                         startAngle = sweep,
-                        sweepAngle = 220f,
+                        sweepAngle = 240f,
                         useCenter = false,
                         topLeft = Offset(center.x - baseRadius, center.y - baseRadius),
                         size = Size(baseRadius * 2f, baseRadius * 2f),
-                        style = Stroke(
-                            width = 3.dp.toPx(),
-                            cap = StrokeCap.Round
-                        )
+                        style = Stroke(width = 3.5.dp.toPx(), cap = StrokeCap.Round)
                     )
+
+                    // Counter-rotating tertiary calibration arc
                     drawArc(
-                        color = tertiaryColor.copy(alpha = 0.58f),
-                        startAngle = -sweep * 0.7f,
-                        sweepAngle = 140f,
+                        color = tertiaryColor.copy(alpha = 0.65f),
+                        startAngle = -sweep * 0.8f,
+                        sweepAngle = 130f,
                         useCenter = false,
-                        topLeft = Offset(center.x - baseRadius * 1.16f, center.y - baseRadius * 1.16f),
-                        size = Size(baseRadius * 2.32f, baseRadius * 2.32f),
-                        style = Stroke(
-                            width = 2.dp.toPx(),
-                            cap = StrokeCap.Round
-                        )
+                        topLeft = Offset(center.x - baseRadius * 1.22f, center.y - baseRadius * 1.22f),
+                        size = Size(baseRadius * 2.44f, baseRadius * 2.44f),
+                        style = Stroke(width = 2.dp.toPx(), cap = StrokeCap.Round)
+                    )
+
+                    // Orbiting 3D spatial coordinate node
+                    val rad = Math.toRadians(orbitAngle.toDouble())
+                    val orbitX = center.x + (baseRadius * 1.38f) * cos(rad).toFloat()
+                    val orbitY = center.y + (baseRadius * 0.65f) * sin(rad).toFloat()
+                    drawCircle(
+                        color = secondaryColor,
+                        radius = 5.dp.toPx(),
+                        center = Offset(orbitX, orbitY)
+                    )
+                    drawCircle(
+                        color = Color.White,
+                        radius = 2.dp.toPx(),
+                        center = Offset(orbitX, orbitY)
                     )
                 }
 
-                // Central Hero Official Material 3 Icon Emblem (ViewInAr) + Frosted Satellites
+                // Central Hero Icon & Floating Satellites
                 Box(
                     modifier = Modifier
                         .align(Alignment.Center)
-                        .offset(y = (-12).dp)
+                        .offset(y = (-10).dp)
                 ) {
                     Surface(
                         shape = ExpressiveCookie8Shape,
-                        color = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(80.dp)
+                        color = primaryColor,
+                        shadowElevation = 8.dp,
+                        modifier = Modifier.size(86.dp)
                     ) {
                         Box(contentAlignment = Alignment.Center) {
                             Icon(
                                 imageVector = Icons.Rounded.ViewInAr,
                                 contentDescription = tr("wel_card_ar_icon_desc"),
                                 tint = MaterialTheme.colorScheme.onPrimary,
-                                modifier = Modifier.size(40.dp)
+                                modifier = Modifier.size(42.dp)
                             )
                         }
                     }
 
                     Surface(
                         shape = ExpressiveSquircle,
-                        color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.90f),
-                        border = BorderStroke(1.dp, Color.White.copy(alpha = if (isDark) 0.18f else 0.55f)),
+                        color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.94f),
+                        border = BorderStroke(1.dp, Color.White.copy(alpha = if (isDark) 0.20f else 0.60f)),
+                        shadowElevation = 4.dp,
                         modifier = Modifier
                             .align(Alignment.TopStart)
-                            .offset(x = (-32).dp, y = (-8).dp)
-                            .size(40.dp)
+                            .offset(x = (-34).dp, y = (-10).dp)
+                            .size(42.dp)
                     ) {
                         Box(contentAlignment = Alignment.Center) {
                             Icon(
                                 imageVector = Icons.Rounded.Straighten,
                                 contentDescription = null,
                                 tint = MaterialTheme.colorScheme.onSecondaryContainer,
-                                modifier = Modifier.size(20.dp)
+                                modifier = Modifier.size(21.dp)
                             )
                         }
                     }
 
                     Surface(
                         shape = ExpressiveCloverShape,
-                        color = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.90f),
-                        border = BorderStroke(1.dp, Color.White.copy(alpha = if (isDark) 0.18f else 0.55f)),
+                        color = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.94f),
+                        border = BorderStroke(1.dp, Color.White.copy(alpha = if (isDark) 0.20f else 0.60f)),
+                        shadowElevation = 4.dp,
                         modifier = Modifier
                             .align(Alignment.BottomEnd)
-                            .offset(x = 32.dp, y = 6.dp)
-                            .size(40.dp)
+                            .offset(x = 34.dp, y = 8.dp)
+                            .size(42.dp)
                     ) {
                         Box(contentAlignment = Alignment.Center) {
                             Icon(
                                 imageVector = Icons.Rounded.SquareFoot,
                                 contentDescription = null,
                                 tint = MaterialTheme.colorScheme.onTertiaryContainer,
-                                modifier = Modifier.size(19.dp)
+                                modifier = Modifier.size(20.dp)
                             )
                         }
                     }
                 }
             }
 
-            // Frosted Glass Bottom Badge
+            // Tinted M3 Expressive Bottom Badge
             val pillShape = RoundedCornerShape(16.dp)
             Box(
                 modifier = Modifier
                     .align(Alignment.BottomStart)
                     .padding(14.dp)
                     .clip(pillShape)
-                    .progressiveGlass(
-                        backdropState = innerGlassState,
-                        direction = BlurDirection.BOTTOM_TO_TOP,
-                        maxBlurRadius = 18.dp,
-                        tintColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = if (isDark) 0.72f else 0.80f),
-                        shape = pillShape,
-                        borderColor = Color.White.copy(alpha = if (isDark) 0.18f else 0.55f)
+                    .background(MaterialTheme.colorScheme.primaryContainer.copy(alpha = if (isDark) 0.86f else 0.92f))
+                    .border(
+                        0.8.dp,
+                        Color.White.copy(alpha = if (isDark) 0.20f else 0.60f),
+                        pillShape
                     )
             ) {
                 Row(
@@ -268,15 +305,15 @@ internal fun WelcomeArHeroShowcase(
                 ) {
                     Surface(
                         shape = ExpressiveCookie8Shape,
-                        color = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(20.dp)
+                        color = primaryColor,
+                        modifier = Modifier.size(22.dp)
                     ) {
                         Box(contentAlignment = Alignment.Center) {
                             Icon(
                                 imageVector = Icons.Rounded.CenterFocusStrong,
                                 contentDescription = null,
                                 tint = MaterialTheme.colorScheme.onPrimary,
-                                modifier = Modifier.size(12.dp)
+                                modifier = Modifier.size(13.dp)
                             )
                         }
                     }
@@ -294,7 +331,7 @@ internal fun WelcomeArHeroShowcase(
 }
 
 /**
- * Slide 2 Showcase: Photo, Video Recording & History Organization with Frosted Glass & M3 Icons
+ * Slide 2 Showcase: Enhanced Photo & Video Recording Showcase with Laser Scan & Target Brackets
  */
 @Composable
 internal fun WelcomeCaptureShowcase(
@@ -306,16 +343,16 @@ internal fun WelcomeCaptureShowcase(
         initialValue = 0f,
         targetValue = 1f,
         animationSpec = infiniteRepeatable(
-            animation = tween(2600, easing = FastOutSlowInEasing),
+            animation = tween(2800, easing = FastOutSlowInEasing),
             repeatMode = RepeatMode.Reverse
         ),
         label = "lineScanProgress"
     )
     val recAlpha by infinite.animateFloat(
-        initialValue = 0.35f,
+        initialValue = 0.3f,
         targetValue = 1f,
         animationSpec = infiniteRepeatable(
-            animation = tween(750, easing = LinearEasing),
+            animation = tween(700, easing = LinearEasing),
             repeatMode = RepeatMode.Reverse
         ),
         label = "recBlink"
@@ -324,8 +361,7 @@ internal fun WelcomeCaptureShowcase(
     val isDark = LocalAppDarkTheme.current
     val primary = MaterialTheme.colorScheme.primary
     val secondary = MaterialTheme.colorScheme.secondary
-    val cardShape = RoundedCornerShape(30.dp)
-    val innerGlassState = rememberGradientBlurBackdropState()
+    val cardShape = RoundedCornerShape(32.dp)
 
     Card(
         shape = cardShape,
@@ -333,52 +369,48 @@ internal fun WelcomeCaptureShowcase(
         elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
         modifier = modifier
             .fillMaxWidth()
-            .height(210.dp)
+            .height(220.dp)
             .progressiveGlass(
                 backdropState = backdropState,
                 direction = BlurDirection.RADIAL_EDGE,
-                maxBlurRadius = 26.dp,
-                tintColor = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = if (isDark) 0.52f else 0.68f),
+                maxBlurRadius = 28.dp,
+                tintColor = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = if (isDark) 0.54f else 0.70f),
                 shape = cardShape,
-                borderColor = if (isDark) Color.White.copy(alpha = 0.14f) else Color.White.copy(alpha = 0.65f)
+                borderColor = if (isDark) Color.White.copy(alpha = 0.16f) else Color.White.copy(alpha = 0.70f)
             )
     ) {
         Box(modifier = Modifier.fillMaxSize()) {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .gradientBlurSource(innerGlassState)
-            ) {
-                Canvas(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .hardwareBackdropBlur(enabled = true, blurRadius = 60f)
-                ) {
+            Box(modifier = Modifier.fillMaxSize()) {
+                Canvas(modifier = Modifier.fillMaxSize()) {
                     drawCircle(
-                        color = secondary.copy(alpha = if (isDark) 0.32f else 0.22f),
-                        radius = size.minDimension * 0.40f,
+                        brush = Brush.radialGradient(
+                            colors = listOf(
+                                secondary.copy(alpha = if (isDark) 0.34f else 0.22f),
+                                secondary.copy(alpha = if (isDark) 0.12f else 0.08f),
+                                secondary.copy(alpha = 0f)
+                            ),
+                            center = Offset(size.width * 0.72f, size.height * 0.30f),
+                            radius = size.minDimension * 0.58f
+                        ),
+                        radius = size.minDimension * 0.58f,
                         center = Offset(size.width * 0.72f, size.height * 0.30f)
-                    )
-                    drawCircle(
-                        color = primary.copy(alpha = if (isDark) 0.28f else 0.20f),
-                        radius = size.minDimension * 0.36f,
-                        center = Offset(size.width * 0.26f, size.height * 0.66f)
                     )
                 }
 
                 Canvas(modifier = Modifier.fillMaxSize()) {
-                    val pad = 24.dp.toPx()
+                    val pad = 22.dp.toPx()
                     val frameW = size.width - pad * 2
                     val frameH = size.height - pad * 2
-                    val cornerLen = 18.dp.toPx()
-                    val strokeW = 3.dp.toPx()
+                    val cornerLen = 20.dp.toPx()
+                    val strokeW = 3.5.dp.toPx()
 
                     val left = pad
                     val top = pad
                     val right = left + frameW
                     val bottom = top + frameH
-                    val bracketColor = primary.copy(alpha = 0.72f)
+                    val bracketColor = primary.copy(alpha = 0.78f)
 
+                    // Corner Targeting Brackets
                     drawLine(bracketColor, Offset(left, top), Offset(left + cornerLen, top), strokeW, StrokeCap.Round)
                     drawLine(bracketColor, Offset(left, top), Offset(left, top + cornerLen), strokeW, StrokeCap.Round)
                     drawLine(bracketColor, Offset(right - cornerLen, top), Offset(right, top), strokeW, StrokeCap.Round)
@@ -388,43 +420,45 @@ internal fun WelcomeCaptureShowcase(
                     drawLine(bracketColor, Offset(right - cornerLen, bottom), Offset(right, bottom), strokeW, StrokeCap.Round)
                     drawLine(bracketColor, Offset(right, bottom - cornerLen), Offset(right, bottom), strokeW, StrokeCap.Round)
 
-                    val boxLeft = size.width * 0.22f
-                    val boxTop = size.height * 0.33f
-                    val boxW = size.width * 0.56f
-                    val boxH = size.height * 0.32f
+                    val boxLeft = size.width * 0.20f
+                    val boxTop = size.height * 0.31f
+                    val boxW = size.width * 0.60f
+                    val boxH = size.height * 0.36f
+
                     drawRoundRect(
-                        color = primary.copy(alpha = 0.12f),
+                        color = primary.copy(alpha = 0.14f),
                         topLeft = Offset(boxLeft, boxTop),
                         size = Size(boxW, boxH),
-                        cornerRadius = CornerRadius(14.dp.toPx())
+                        cornerRadius = CornerRadius(16.dp.toPx())
                     )
                     drawRoundRect(
-                        color = primary.copy(alpha = 0.38f),
+                        color = primary.copy(alpha = 0.45f),
                         topLeft = Offset(boxLeft, boxTop),
                         size = Size(boxW, boxH),
-                        cornerRadius = CornerRadius(14.dp.toPx()),
-                        style = Stroke(width = 1.5.dp.toPx())
+                        cornerRadius = CornerRadius(16.dp.toPx()),
+                        style = Stroke(width = 2.dp.toPx())
                     )
 
-                    val pStart = Offset(boxLeft + 14.dp.toPx(), boxTop + boxH * 0.5f)
-                    val pEnd = Offset(
-                        boxLeft + 14.dp.toPx() + (boxW - 28.dp.toPx()) * (0.4f + 0.6f * progress),
-                        boxTop + boxH * 0.5f
-                    )
+                    // Laser Scanning Line with Gradient Trail
+                    val currentScanY = boxTop + boxH * progress
                     drawLine(
-                        color = primary,
-                        start = pStart,
-                        end = pEnd,
-                        strokeWidth = 3.5.dp.toPx(),
+                        brush = Brush.verticalGradient(
+                            colors = listOf(
+                                primary.copy(alpha = 0f),
+                                primary,
+                                primary.copy(alpha = 0f)
+                            ),
+                            startY = currentScanY - 16.dp.toPx(),
+                            endY = currentScanY + 16.dp.toPx()
+                        ),
+                        start = Offset(boxLeft + 8.dp.toPx(), currentScanY),
+                        end = Offset(boxLeft + boxW - 8.dp.toPx(), currentScanY),
+                        strokeWidth = 3.dp.toPx(),
                         cap = StrokeCap.Round
                     )
-                    drawCircle(color = primary, radius = 6.dp.toPx(), center = pStart)
-                    drawCircle(color = Color.White, radius = 2.5.dp.toPx(), center = pStart)
-                    drawCircle(color = primary, radius = 6.dp.toPx(), center = pEnd)
-                    drawCircle(color = Color.White, radius = 2.5.dp.toPx(), center = pEnd)
                 }
 
-                // M3 Photo & Video Icon Pair
+                // Photo & Video Icon Badge Pair
                 Row(
                     modifier = Modifier
                         .align(Alignment.TopStart)
@@ -433,48 +467,48 @@ internal fun WelcomeCaptureShowcase(
                 ) {
                     Surface(
                         shape = ExpressiveSquircle,
-                        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.90f),
-                        modifier = Modifier.size(36.dp)
+                        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.94f),
+                        shadowElevation = 3.dp,
+                        modifier = Modifier.size(38.dp)
                     ) {
                         Box(contentAlignment = Alignment.Center) {
                             Icon(
                                 imageVector = Icons.Rounded.PhotoCamera,
                                 contentDescription = null,
                                 tint = MaterialTheme.colorScheme.onPrimaryContainer,
-                                modifier = Modifier.size(18.dp)
+                                modifier = Modifier.size(19.dp)
                             )
                         }
                     }
                     Surface(
                         shape = ExpressiveCloverShape,
-                        color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.90f),
-                        modifier = Modifier.size(36.dp)
+                        color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.94f),
+                        shadowElevation = 3.dp,
+                        modifier = Modifier.size(38.dp)
                     ) {
                         Box(contentAlignment = Alignment.Center) {
                             Icon(
                                 imageVector = Icons.Rounded.Videocam,
                                 contentDescription = null,
                                 tint = MaterialTheme.colorScheme.onSecondaryContainer,
-                                modifier = Modifier.size(18.dp)
+                                modifier = Modifier.size(19.dp)
                             )
                         }
                     }
                 }
             }
 
-            // Frosted REC pill
+            // REC Badge
             Box(
                 modifier = Modifier
                     .align(Alignment.TopEnd)
                     .padding(18.dp)
                     .clip(CircleShape)
-                    .progressiveGlass(
-                        backdropState = innerGlassState,
-                        direction = BlurDirection.TOP_TO_BOTTOM,
-                        maxBlurRadius = 14.dp,
-                        tintColor = MaterialTheme.colorScheme.surface.copy(alpha = if (isDark) 0.72f else 0.80f),
-                        shape = CircleShape,
-                        borderColor = Color.White.copy(alpha = if (isDark) 0.16f else 0.55f)
+                    .background(MaterialTheme.colorScheme.surface.copy(alpha = if (isDark) 0.86f else 0.92f))
+                    .border(
+                        0.8.dp,
+                        Color.White.copy(alpha = if (isDark) 0.18f else 0.60f),
+                        CircleShape
                     )
             ) {
                 Row(
@@ -497,19 +531,18 @@ internal fun WelcomeCaptureShowcase(
                 }
             }
 
+            // Bottom Caption Badge
             val pillShape = RoundedCornerShape(16.dp)
             Box(
                 modifier = Modifier
                     .align(Alignment.BottomStart)
                     .padding(14.dp)
                     .clip(pillShape)
-                    .progressiveGlass(
-                        backdropState = innerGlassState,
-                        direction = BlurDirection.BOTTOM_TO_TOP,
-                        maxBlurRadius = 18.dp,
-                        tintColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = if (isDark) 0.72f else 0.80f),
-                        shape = pillShape,
-                        borderColor = Color.White.copy(alpha = if (isDark) 0.18f else 0.55f)
+                    .background(MaterialTheme.colorScheme.secondaryContainer.copy(alpha = if (isDark) 0.86f else 0.92f))
+                    .border(
+                        0.8.dp,
+                        Color.White.copy(alpha = if (isDark) 0.20f else 0.60f),
+                        pillShape
                     )
             ) {
                 Row(
@@ -519,15 +552,15 @@ internal fun WelcomeCaptureShowcase(
                 ) {
                     Surface(
                         shape = ExpressiveCloverShape,
-                        color = MaterialTheme.colorScheme.secondary,
-                        modifier = Modifier.size(20.dp)
+                        color = secondary,
+                        modifier = Modifier.size(22.dp)
                     ) {
                         Box(contentAlignment = Alignment.Center) {
                             Icon(
                                 imageVector = Icons.Rounded.AutoAwesome,
                                 contentDescription = null,
                                 tint = MaterialTheme.colorScheme.onSecondary,
-                                modifier = Modifier.size(12.dp)
+                                modifier = Modifier.size(13.dp)
                             )
                         }
                     }
@@ -545,7 +578,7 @@ internal fun WelcomeCaptureShowcase(
 }
 
 /**
- * Slide 3 Showcase: Dual-Edge Screen Ruler & Dual-Line Caliper with Optical Frosted Glass
+ * Slide 3 Showcase: Enhanced Screen Ruler & Sliding Caliper Precision Showcase
  */
 @Composable
 internal fun WelcomeToolsShowcase(
@@ -557,7 +590,7 @@ internal fun WelcomeToolsShowcase(
         initialValue = 0f,
         targetValue = 1f,
         animationSpec = infiniteRepeatable(
-            animation = tween(2600, easing = FastOutSlowInEasing),
+            animation = tween(2800, easing = FastOutSlowInEasing),
             repeatMode = RepeatMode.Reverse
         ),
         label = "caliperSweep"
@@ -567,8 +600,7 @@ internal fun WelcomeToolsShowcase(
     val primary = MaterialTheme.colorScheme.primary
     val tertiary = MaterialTheme.colorScheme.tertiary
     val onSurface = MaterialTheme.colorScheme.onSurface
-    val cardShape = RoundedCornerShape(30.dp)
-    val innerGlassState = rememberGradientBlurBackdropState()
+    val cardShape = RoundedCornerShape(32.dp)
 
     Card(
         shape = cardShape,
@@ -576,118 +608,126 @@ internal fun WelcomeToolsShowcase(
         elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
         modifier = modifier
             .fillMaxWidth()
-            .height(210.dp)
+            .height(220.dp)
             .progressiveGlass(
                 backdropState = backdropState,
                 direction = BlurDirection.RADIAL_EDGE,
-                maxBlurRadius = 26.dp,
-                tintColor = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = if (isDark) 0.52f else 0.68f),
+                maxBlurRadius = 28.dp,
+                tintColor = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = if (isDark) 0.54f else 0.70f),
                 shape = cardShape,
-                borderColor = if (isDark) Color.White.copy(alpha = 0.14f) else Color.White.copy(alpha = 0.65f)
+                borderColor = if (isDark) Color.White.copy(alpha = 0.16f) else Color.White.copy(alpha = 0.70f)
             )
     ) {
         Box(modifier = Modifier.fillMaxSize()) {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .gradientBlurSource(innerGlassState)
-            ) {
-                Canvas(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .hardwareBackdropBlur(enabled = true, blurRadius = 60f)
-                ) {
+            Box(modifier = Modifier.fillMaxSize()) {
+                Canvas(modifier = Modifier.fillMaxSize()) {
                     drawCircle(
-                        color = tertiary.copy(alpha = if (isDark) 0.34f else 0.24f),
-                        radius = size.minDimension * 0.42f,
+                        brush = Brush.radialGradient(
+                            colors = listOf(
+                                tertiary.copy(alpha = if (isDark) 0.34f else 0.22f),
+                                tertiary.copy(alpha = if (isDark) 0.12f else 0.08f),
+                                tertiary.copy(alpha = 0f)
+                            ),
+                            center = Offset(size.width * 0.50f, size.height * 0.44f),
+                            radius = size.minDimension * 0.58f
+                        ),
+                        radius = size.minDimension * 0.58f,
                         center = Offset(size.width * 0.50f, size.height * 0.44f)
-                    )
-                    drawCircle(
-                        color = primary.copy(alpha = if (isDark) 0.24f else 0.16f),
-                        radius = size.minDimension * 0.32f,
-                        center = Offset(size.width * 0.85f, size.height * 0.28f)
                     )
                 }
 
+                // Calibrated Precision Ruler Ticks & Sliding Caliper Band Canvas
                 Canvas(modifier = Modifier.fillMaxSize()) {
                     val w = size.width
                     val h = size.height
 
-                    var y = 20.dp.toPx()
+                    // Left Metric Ticks
+                    var y = 18.dp.toPx()
                     var idx = 0
                     val step = 10.dp.toPx()
-                    while (y < h - 54.dp.toPx()) {
-                        val tickLen = if (idx % 5 == 0) 24.dp.toPx() else 13.dp.toPx()
+                    while (y < h - 48.dp.toPx()) {
+                        val tickLen = if (idx % 5 == 0) 26.dp.toPx() else 14.dp.toPx()
                         drawLine(
-                            color = onSurface.copy(alpha = if (idx % 5 == 0) 0.7f else 0.35f),
+                            color = onSurface.copy(alpha = if (idx % 5 == 0) 0.75f else 0.38f),
                             start = Offset(0f, y),
                             end = Offset(tickLen, y),
-                            strokeWidth = if (idx % 5 == 0) 2.2.dp.toPx() else 1.2.dp.toPx()
+                            strokeWidth = if (idx % 5 == 0) 2.5.dp.toPx() else 1.3.dp.toPx(),
+                            cap = StrokeCap.Round
                         )
                         y += step
                         idx++
                     }
 
-                    y = 20.dp.toPx()
+                    // Right Imperial Ticks
+                    y = 18.dp.toPx()
                     idx = 0
                     val inchStep = 14.dp.toPx()
-                    while (y < h - 54.dp.toPx()) {
-                        val tickLen = if (idx % 4 == 0) 24.dp.toPx() else 12.dp.toPx()
+                    while (y < h - 48.dp.toPx()) {
+                        val tickLen = if (idx % 4 == 0) 26.dp.toPx() else 14.dp.toPx()
                         drawLine(
-                            color = primary.copy(alpha = if (idx % 4 == 0) 0.78f else 0.35f),
+                            color = primary.copy(alpha = if (idx % 4 == 0) 0.82f else 0.38f),
                             start = Offset(w, y),
                             end = Offset(w - tickLen, y),
-                            strokeWidth = if (idx % 4 == 0) 2.2.dp.toPx() else 1.2.dp.toPx()
+                            strokeWidth = if (idx % 4 == 0) 2.5.dp.toPx() else 1.3.dp.toPx(),
+                            cap = StrokeCap.Round
                         )
                         y += inchStep
                         idx++
                     }
 
-                    val bandTop = h * 0.25f
-                    val bandBottom = h * (0.45f + caliperSweep * 0.16f)
+                    // Sliding Caliper Span Indicator
+                    val bandTop = h * 0.24f
+                    val bandBottom = h * (0.44f + caliperSweep * 0.18f)
+
                     drawRect(
-                        color = tertiary.copy(alpha = 0.14f),
-                        topLeft = Offset(30.dp.toPx(), bandTop),
-                        size = Size(w - 60.dp.toPx(), bandBottom - bandTop)
+                        brush = Brush.verticalGradient(
+                            colors = listOf(
+                                tertiary.copy(alpha = 0.08f),
+                                tertiary.copy(alpha = 0.22f),
+                                primary.copy(alpha = 0.08f)
+                            ),
+                            startY = bandTop,
+                            endY = bandBottom
+                        ),
+                        topLeft = Offset(36.dp.toPx(), bandTop),
+                        size = Size(w - 72.dp.toPx(), bandBottom - bandTop)
                     )
+
                     drawLine(
                         color = tertiary,
-                        start = Offset(26.dp.toPx(), bandTop),
-                        end = Offset(w - 26.dp.toPx(), bandTop),
-                        strokeWidth = 2.2.dp.toPx()
+                        start = Offset(30.dp.toPx(), bandTop),
+                        end = Offset(w - 30.dp.toPx(), bandTop),
+                        strokeWidth = 2.5.dp.toPx(),
+                        cap = StrokeCap.Round
                     )
                     drawLine(
                         color = primary,
-                        start = Offset(26.dp.toPx(), bandBottom),
-                        end = Offset(w - 26.dp.toPx(), bandBottom),
-                        strokeWidth = 2.2.dp.toPx()
+                        start = Offset(30.dp.toPx(), bandBottom),
+                        end = Offset(w - 30.dp.toPx(), bandBottom),
+                        strokeWidth = 2.5.dp.toPx(),
+                        cap = StrokeCap.Round
                     )
-                    drawCircle(
-                        color = tertiary,
-                        radius = 6.dp.toPx(),
-                        center = Offset(w * 0.5f, bandTop)
-                    )
-                    drawCircle(
-                        color = primary,
-                        radius = 6.dp.toPx(),
-                        center = Offset(w * 0.5f, bandBottom)
-                    )
+
+                    drawCircle(color = tertiary, radius = 6.5.dp.toPx(), center = Offset(w * 0.5f, bandTop))
+                    drawCircle(color = Color.White, radius = 2.5.dp.toPx(), center = Offset(w * 0.5f, bandTop))
+
+                    drawCircle(color = primary, radius = 6.5.dp.toPx(), center = Offset(w * 0.5f, bandBottom))
+                    drawCircle(color = Color.White, radius = 2.5.dp.toPx(), center = Offset(w * 0.5f, bandBottom))
                 }
             }
 
+            // Bottom Caption Badge
             val pillShape = RoundedCornerShape(16.dp)
             Box(
                 modifier = Modifier
                     .align(Alignment.BottomStart)
                     .padding(14.dp)
                     .clip(pillShape)
-                    .progressiveGlass(
-                        backdropState = innerGlassState,
-                        direction = BlurDirection.BOTTOM_TO_TOP,
-                        maxBlurRadius = 18.dp,
-                        tintColor = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = if (isDark) 0.72f else 0.80f),
-                        shape = pillShape,
-                        borderColor = Color.White.copy(alpha = if (isDark) 0.18f else 0.55f)
+                    .background(MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = if (isDark) 0.86f else 0.92f))
+                    .border(
+                        0.8.dp,
+                        Color.White.copy(alpha = if (isDark) 0.20f else 0.60f),
+                        pillShape
                     )
             ) {
                 Row(
@@ -697,15 +737,15 @@ internal fun WelcomeToolsShowcase(
                 ) {
                     Surface(
                         shape = ExpressiveSquircle,
-                        color = MaterialTheme.colorScheme.tertiary,
-                        modifier = Modifier.size(20.dp)
+                        color = tertiary,
+                        modifier = Modifier.size(22.dp)
                     ) {
                         Box(contentAlignment = Alignment.Center) {
                             Icon(
                                 imageVector = Icons.Rounded.Straighten,
                                 contentDescription = null,
                                 tint = MaterialTheme.colorScheme.onTertiary,
-                                modifier = Modifier.size(12.dp)
+                                modifier = Modifier.size(13.dp)
                             )
                         }
                     }

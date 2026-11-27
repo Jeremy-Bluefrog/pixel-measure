@@ -206,13 +206,16 @@ private fun DrawScope.drawArMeasurementAnchor(
     label: String?,
     originLabel: String,
     primaryColor: Color,
+    originColor: Color,
+    onOriginArgb: Int,
+    onPrimaryArgb: Int,
     isOrigin: Boolean,
     nodeLabelPaint: android.graphics.Paint,
     badgeBgPaint: android.graphics.Paint
 ) {
     if (center.x.isNaN() || center.y.isNaN() || center.x < -2000f || center.y < -2000f) return
 
-    val anchorColor = if (isOrigin) Color(0xFFFFB300) else primaryColor
+    val anchorColor = if (isOrigin) originColor else primaryColor
     val outerRadius = if (isOrigin) 14.dp.toPx() else 11.dp.toPx()
     val dotRadius = if (isOrigin) 5.6.dp.toPx() else 4.8.dp.toPx()
 
@@ -251,7 +254,7 @@ private fun DrawScope.drawArMeasurementAnchor(
         badgeBgPaint.color = anchorColor.toArgb()
         drawRoundRect(bx - tw / 2f - padH, by - th - padV, bx + tw / 2f + padH, by + 2f + padV, 14f, 14f, badgeBgPaint)
 
-        nodeLabelPaint.color = if (isOrigin) android.graphics.Color.BLACK else android.graphics.Color.WHITE
+        nodeLabelPaint.color = if (isOrigin) onOriginArgb else onPrimaryArgb
         drawText(badgeChar, bx, by, nodeLabelPaint)
     }
 }
@@ -277,9 +280,14 @@ fun ArMeasurementCanvasOverlay(
     val themePrimary = MaterialTheme.colorScheme.primary
     val colorSecondary = MaterialTheme.colorScheme.secondary
     val themeTertiary = MaterialTheme.colorScheme.tertiary
+    val colorError = MaterialTheme.colorScheme.error
     val colorPrimaryContainer = MaterialTheme.colorScheme.primaryContainer
     val colorOnPrimaryContainer = MaterialTheme.colorScheme.onPrimaryContainer
     val colorOnPrimary = MaterialTheme.colorScheme.onPrimary
+    val colorOnTertiary = MaterialTheme.colorScheme.onTertiary
+    val colorSurfaceContainerHigh = MaterialTheme.colorScheme.surfaceContainerHigh
+    val colorOnSurface = MaterialTheme.colorScheme.onSurface
+    val colorOutlineVariant = MaterialTheme.colorScheme.outlineVariant
     val currentLang = LocalAppLanguage.current
     val originLabel = tr("canvas_origin")
 
@@ -291,11 +299,13 @@ fun ArMeasurementCanvasOverlay(
     val liveTargetScreenPosState = viewModel.liveTargetScreenPos.collectAsStateWithLifecycle()
     val liveDistanceMetersState = viewModel.liveDistanceMeters.collectAsStateWithLifecycle()
     val isSnappedState = viewModel.isSnapped.collectAsStateWithLifecycle()
+    val isImageEdgeSnappedState = viewModel.isImageEdgeSnapped.collectAsStateWithLifecycle()
     val multiSampleProgressState = viewModel.multiSampleProgress.collectAsStateWithLifecycle()
     val isMultiSampleLockedState = viewModel.isMultiSampleLocked.collectAsStateWithLifecycle()
     val autoDetectedTypeState = viewModel.autoDetectedType.collectAsStateWithLifecycle()
     val liveSurfaceNormalState = viewModel.liveSurfaceNormal.collectAsStateWithLifecycle()
     val isSurfaceNormalLockedState = viewModel.isSurfaceNormalLocked.collectAsStateWithLifecycle()
+    val surfaceQualityState = viewModel.surfaceQuality.collectAsStateWithLifecycle()
 
     // Low-frequency configuration states
     val isHorizontallyMirrored by viewModel.isHorizontallyMirrored.collectAsStateWithLifecycle()
@@ -442,6 +452,7 @@ fun ArMeasurementCanvasOverlay(
         val liveTargetScreenPos = liveTargetScreenPosState.value
         val liveDistanceMeters = liveDistanceMetersState.value
         val isSnapped = isSnappedState.value
+        val isImageEdgeSnapped = isImageEdgeSnappedState.value
         val multiSampleProgress = multiSampleProgressState.value
         val isMultiSampleLocked = isMultiSampleLockedState.value
         val autoDetectedType = autoDetectedTypeState.value
@@ -449,13 +460,42 @@ fun ArMeasurementCanvasOverlay(
         val isSurfaceNormalLocked = isSurfaceNormalLockedState.value
         val currentDashPhase = dashPhase.value
 
-        val primaryContainerBgArgb = Color(colorPrimaryContainer.red, colorPrimaryContainer.green, colorPrimaryContainer.blue, badgeAlpha).toArgb()
+        val isDynamicPalette = arAccentPalette == "DYNAMIC"
+        val effectiveOnPrimary = if (isDynamicPalette) {
+            colorOnPrimary
+        } else if (colorPrimary.luminance() > 0.45f) {
+            Color.Black
+        } else {
+            Color.White
+        }
+        val effectiveOnTertiary = if (isDynamicPalette) {
+            colorOnTertiary
+        } else if (colorTertiary.luminance() > 0.45f) {
+            Color.Black
+        } else {
+            Color.White
+        }
+        val primaryContainerBgArgb = if (isDynamicPalette) {
+            Color(colorPrimaryContainer.red, colorPrimaryContainer.green, colorPrimaryContainer.blue, badgeAlpha).toArgb()
+        } else {
+            Color(colorSurfaceContainerHigh.red, colorSurfaceContainerHigh.green, colorSurfaceContainerHigh.blue, badgeAlpha).toArgb()
+        }
         val primaryBadgeBgArgb = Color(colorPrimary.red, colorPrimary.green, colorPrimary.blue, badgeAlpha).toArgb()
         val tertiaryBadgeBgArgb = Color(colorTertiary.red, colorTertiary.green, colorTertiary.blue, badgeAlpha).toArgb()
-        val primaryBorderArgb = colorPrimary.copy(alpha = 0.8f).toArgb()
-        val whiteBorderArgb = Color.White.copy(alpha = 0.85f).toArgb()
-        val onPrimaryContainerArgb = colorOnPrimaryContainer.toArgb()
-        val onPrimaryArgb = colorOnPrimary.toArgb()
+        val primaryBorderArgb = colorPrimary.copy(alpha = 0.85f).toArgb()
+        val primaryBadgeBorderArgb = if (isDynamicPalette) {
+            colorOutlineVariant.copy(alpha = 0.85f).toArgb()
+        } else {
+            effectiveOnPrimary.copy(alpha = 0.55f).toArgb()
+        }
+        val tertiaryBadgeBorderArgb = if (isDynamicPalette) {
+            colorOutlineVariant.copy(alpha = 0.85f).toArgb()
+        } else {
+            effectiveOnTertiary.copy(alpha = 0.55f).toArgb()
+        }
+        val onPrimaryContainerArgb = if (isDynamicPalette) colorOnPrimaryContainer.toArgb() else colorOnSurface.toArgb()
+        val onPrimaryArgb = effectiveOnPrimary.toArgb()
+        val onTertiaryArgb = effectiveOnTertiary.toArgb()
 
         val screenW = size.width.toInt()
         val screenH = size.height.toInt()
@@ -798,7 +838,7 @@ fun ArMeasurementCanvasOverlay(
 
                         badgeBgPaint.color = primaryBadgeBgArgb
                         drawRoundRect(left, top, right, bottom, radius, radius, badgeBgPaint)
-                        badgeBorderPaint.color = whiteBorderArgb
+                        badgeBorderPaint.color = primaryBadgeBorderArgb
                         drawRoundRect(left, top, right, bottom, radius, radius, badgeBorderPaint)
                         badgeTextPaint.color = onPrimaryArgb
                         drawText(areaText, centroidX, centroidY + textHeight * 0.35f, badgeTextPaint)
@@ -885,9 +925,9 @@ fun ArMeasurementCanvasOverlay(
 
                     badgeBgPaint.color = tertiaryBadgeBgArgb
                     drawRoundRect(left, top, right, bottom, radius, radius, badgeBgPaint)
-                    badgeBorderPaint.color = whiteBorderArgb
+                    badgeBorderPaint.color = tertiaryBadgeBorderArgb
                     drawRoundRect(left, top, right, bottom, radius, radius, badgeBorderPaint)
-                    badgeTextPaint.color = android.graphics.Color.BLACK
+                    badgeTextPaint.color = onTertiaryArgb
                     drawText(angleText, badgeX, badgeY + textHeight * 0.35f, badgeTextPaint)
                 }
             }
@@ -981,9 +1021,9 @@ fun ArMeasurementCanvasOverlay(
 
                     badgeBgPaint.color = tertiaryBadgeBgArgb
                     drawRoundRect(left, top, right, bottom, radius, radius, badgeBgPaint)
-                    badgeBorderPaint.color = whiteBorderArgb
+                    badgeBorderPaint.color = tertiaryBadgeBorderArgb
                     drawRoundRect(left, top, right, bottom, radius, radius, badgeBorderPaint)
-                    badgeTextPaint.color = android.graphics.Color.WHITE
+                    badgeTextPaint.color = onTertiaryArgb
                     drawText(hText, midHeightX, midHeightY + textHeight * 0.35f, badgeTextPaint)
                 }
             }
@@ -1137,7 +1177,7 @@ fun ArMeasurementCanvasOverlay(
 
                             badgeBgPaint.color = primaryBadgeBgArgb
                             drawRoundRect(left, top, right, bottom, radius, radius, badgeBgPaint)
-                            badgeBorderPaint.color = whiteBorderArgb
+                            badgeBorderPaint.color = primaryBadgeBorderArgb
                             drawRoundRect(left, top, right, bottom, radius, radius, badgeBorderPaint)
                             badgeTextPaint.color = onPrimaryArgb
                             drawText(circleText, midX, midY + textHeight * 0.35f, badgeTextPaint)
@@ -1250,9 +1290,9 @@ fun ArMeasurementCanvasOverlay(
 
                 badgeBgPaint.color = tertiaryBadgeBgArgb
                 drawRoundRect(left, top, right, bottom, radius, radius, badgeBgPaint)
-                badgeBorderPaint.color = whiteBorderArgb
+                badgeBorderPaint.color = tertiaryBadgeBorderArgb
                 drawRoundRect(left, top, right, bottom, radius, radius, badgeBorderPaint)
-                badgeTextPaint.color = android.graphics.Color.BLACK
+                badgeTextPaint.color = onTertiaryArgb
                 drawText(volText, center2D.x, center2D.y + textHeight * 0.35f, badgeTextPaint)
             }
         }
@@ -1414,7 +1454,7 @@ fun ArMeasurementCanvasOverlay(
 
                             badgeBgPaint.color = primaryBadgeBgArgb
                             drawRoundRect(left, top, right, bottom, radius, radius, badgeBgPaint)
-                            badgeBorderPaint.color = whiteBorderArgb
+                            badgeBorderPaint.color = primaryBadgeBorderArgb
                             drawRoundRect(left, top, right, bottom, radius, radius, badgeBorderPaint)
                             badgeTextPaint.color = onPrimaryArgb
                             drawText(distText, midX, midY + textHeight * 0.35f, badgeTextPaint)
@@ -1437,6 +1477,9 @@ fun ArMeasurementCanvasOverlay(
                     label = pt3d.label,
                     originLabel = originLabel,
                     primaryColor = colorPrimary,
+                    originColor = colorTertiary,
+                    onOriginArgb = onTertiaryArgb,
+                    onPrimaryArgb = onPrimaryArgb,
                     isOrigin = (index == 0),
                     nodeLabelPaint = nodeLabelPaint,
                     badgeBgPaint = badgeBgPaint
@@ -1447,6 +1490,23 @@ fun ArMeasurementCanvasOverlay(
         // -------------------------------------------------------------
         // 9. Active Target HUD Reticle (全風格 3D 平面貼合圓圈 + 1€ SLERP 流暢跟隨 + 景深高光與法線視差)
         // -------------------------------------------------------------
+        val surfaceWarning = surfaceQualityState.value.warning
+        val reticlePrimaryColor = when {
+            isSnapped -> colorPrimary
+            surfaceWarning == com.example.logic.ar.GeometryWarning.LOW_LIGHT ||
+                surfaceWarning == com.example.logic.ar.GeometryWarning.LOW_TEXTURE_WALL -> colorError
+            surfaceWarning == com.example.logic.ar.GeometryWarning.OBLIQUE_ANGLE ||
+                surfaceWarning == com.example.logic.ar.GeometryWarning.LONG_RANGE -> colorTertiary
+            else -> colorPrimary
+        }
+        val reticleAccentColor = when {
+            isSnapped -> colorTertiary
+            surfaceWarning == com.example.logic.ar.GeometryWarning.LOW_LIGHT ||
+                surfaceWarning == com.example.logic.ar.GeometryWarning.LOW_TEXTURE_WALL -> colorError.copy(alpha = 0.85f)
+            surfaceWarning == com.example.logic.ar.GeometryWarning.OBLIQUE_ANGLE ||
+                surfaceWarning == com.example.logic.ar.GeometryWarning.LONG_RANGE -> Color(0xFFF59E0B)
+            else -> colorTertiary
+        }
         var drew3DReticle = false
         if (isSurfaceNormalLocked &&
             hasValidMatrices &&
@@ -1490,8 +1550,8 @@ fun ArMeasurementCanvasOverlay(
                     centerZ = smoothedTargetZ,
                     outerRadiusM = outerRadiusM,
                     style = reticleStyle,
-                    primaryColor = colorPrimary,
-                    accentColor = colorTertiary,
+                    primaryColor = reticlePrimaryColor,
+                    accentColor = reticleAccentColor,
                     isSnapped = isSnapped,
                     dashPhase = currentDashPhase,
                     viewMatrix = viewMatrix,
@@ -1506,13 +1566,28 @@ fun ArMeasurementCanvasOverlay(
             drawArReticle(
                 center = currentReticlePos,
                 style = reticleStyle,
-                primaryColor = colorPrimary,
-                accentColor = colorTertiary,
+                primaryColor = reticlePrimaryColor,
+                accentColor = reticleAccentColor,
                 isSnapped = isSnapped,
                 pulseScale = reticlePulseScale.value,
                 snapScale = snapScaleAnimated.value,
                 dashPhase = currentDashPhase
             )
+        }
+
+        // Crisp Sobel optical edge-lock corner ticks when locked onto a physical high-contrast edge
+        if (isImageEdgeSnapped && !isSnapped) {
+            val edgeDist = 20.dp.toPx() * snapScaleAnimated.value.coerceIn(0.9f, 1.2f)
+            val tickLen = 6.dp.toPx()
+            val edgeStroke = 2.dp.toPx()
+            drawLine(reticleAccentColor, Offset(currentReticlePos.x - edgeDist, currentReticlePos.y - edgeDist), Offset(currentReticlePos.x - edgeDist + tickLen, currentReticlePos.y - edgeDist), edgeStroke, StrokeCap.Round)
+            drawLine(reticleAccentColor, Offset(currentReticlePos.x - edgeDist, currentReticlePos.y - edgeDist), Offset(currentReticlePos.x - edgeDist, currentReticlePos.y - edgeDist + tickLen), edgeStroke, StrokeCap.Round)
+            drawLine(reticleAccentColor, Offset(currentReticlePos.x + edgeDist, currentReticlePos.y - edgeDist), Offset(currentReticlePos.x + edgeDist - tickLen, currentReticlePos.y - edgeDist), edgeStroke, StrokeCap.Round)
+            drawLine(reticleAccentColor, Offset(currentReticlePos.x + edgeDist, currentReticlePos.y - edgeDist), Offset(currentReticlePos.x + edgeDist, currentReticlePos.y - edgeDist + tickLen), edgeStroke, StrokeCap.Round)
+            drawLine(reticleAccentColor, Offset(currentReticlePos.x - edgeDist, currentReticlePos.y + edgeDist), Offset(currentReticlePos.x - edgeDist + tickLen, currentReticlePos.y + edgeDist), edgeStroke, StrokeCap.Round)
+            drawLine(reticleAccentColor, Offset(currentReticlePos.x - edgeDist, currentReticlePos.y + edgeDist), Offset(currentReticlePos.x - edgeDist, currentReticlePos.y + edgeDist - tickLen), edgeStroke, StrokeCap.Round)
+            drawLine(reticleAccentColor, Offset(currentReticlePos.x + edgeDist, currentReticlePos.y + edgeDist), Offset(currentReticlePos.x + edgeDist - tickLen, currentReticlePos.y + edgeDist), edgeStroke, StrokeCap.Round)
+            drawLine(reticleAccentColor, Offset(currentReticlePos.x + edgeDist, currentReticlePos.y + edgeDist), Offset(currentReticlePos.x + edgeDist, currentReticlePos.y + edgeDist - tickLen), edgeStroke, StrokeCap.Round)
         }
 
         // Multi-Sample Burst Averaging Dynamic Progress Arc (Only visible during active burst measurement)

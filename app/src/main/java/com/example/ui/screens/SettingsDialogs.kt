@@ -12,6 +12,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
+import androidx.compose.material.icons.automirrored.rounded.ArrowForward
 import androidx.compose.material.icons.rounded.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -702,6 +703,7 @@ fun SmartAssistPage(
     onShowPointCloudChange: (Boolean) -> Unit,
     onVertexSnapChange: (Float) -> Unit,
     onScaleCalibrationChange: (Float) -> Unit,
+    onStartGuidedCalibration: () -> Unit = {},
     onNavigateBack: () -> Unit
 ) {
     val lang = LocalAppLanguage.current
@@ -854,6 +856,33 @@ fun SmartAssistPage(
                         .fillMaxWidth()
                         .testTag("slider_scale_calibration")
                 )
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f))
+                FilledTonalButton(
+                    onClick = onStartGuidedCalibration,
+                    shape = RoundedCornerShape(14.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 48.dp)
+                        .testTag("btn_open_guided_calibration")
+                ) {
+                    Icon(Icons.Rounded.Straighten, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = tr("set_assist_calib_btn"),
+                            style = MaterialTheme.typography.labelLarge,
+                            fontFamily = GoogleSansRounded,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = tr("set_assist_calib_sub"),
+                            style = MaterialTheme.typography.bodySmall,
+                            fontFamily = GoogleSansRounded,
+                            color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.8f)
+                        )
+                    }
+                    Icon(Icons.AutoMirrored.Rounded.ArrowForward, contentDescription = null, modifier = Modifier.size(18.dp))
+                }
             }
         }
     }

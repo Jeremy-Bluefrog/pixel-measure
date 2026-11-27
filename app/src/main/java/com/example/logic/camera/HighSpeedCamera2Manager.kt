@@ -87,6 +87,11 @@ class HighSpeedCamera2Manager(private val context: Context) {
 
     var onCameraUnavailable: (() -> Unit)? = null
     var onCameraAvailable: (() -> Unit)? = null
+    var onCaptureFocusStateChanged: ((isSettled: Boolean) -> Unit)? = null
+
+    @Volatile
+    private var lastReportedFocusSettled: Boolean = true
+    private var consecutiveAfScanningFrames: Int = 0
 
     var preferredFacing: Int = CameraCharacteristics.LENS_FACING_BACK
         private set
@@ -346,13 +351,28 @@ class HighSpeedCamera2Manager(private val context: Context) {
 
     /**
      * Safely selects supported Autofocus Mode.
+     * Under ARCore SharedCamera (TEMPLATE_RECORD), prioritizes CONTINUOUS_VIDEO to minimize
+     * focus breathing and keep SLAM / optical edge geometry stable across frames.
      */
-    private fun selectOptimalAfMode(characteristics: CameraCharacteristics): Int {
+    internal fun selectOptimalAfMode(
+        characteristics: CameraCharacteristics,
+        preferVideoAf: Boolean = false
+    ): Int {
         val afModes = characteristics.get(CameraCharacteristics.CONTROL_AF_AVAILABLE_MODES) ?: intArrayOf()
-        return when {
-            afModes.contains(CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE) -> CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE
-            afModes.contains(CaptureRequest.CONTROL_AF_MODE_AUTO) -> CaptureRequest.CONTROL_AF_MODE_AUTO
-            else -> CaptureRequest.CONTROL_AF_MODE_OFF
+        return if (preferVideoAf) {
+            when {
+                afModes.contains(CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO) -> CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO
+                afModes.contains(CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE) -> CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE
+                afModes.contains(CaptureRequest.CONTROL_AF_MODE_AUTO) -> CaptureRequest.CONTROL_AF_MODE_AUTO
+                else -> CaptureRequest.CONTROL_AF_MODE_OFF
+            }
+        } else {
+            when {
+                afModes.contains(CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE) -> CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE
+                afModes.contains(CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO) -> CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO
+                afModes.contains(CaptureRequest.CONTROL_AF_MODE_AUTO) -> CaptureRequest.CONTROL_AF_MODE_AUTO
+                else -> CaptureRequest.CONTROL_AF_MODE_OFF
+            }
         }
     }
 
@@ -367,6 +387,24 @@ class HighSpeedCamera2Manager(private val context: Context) {
         ) {
             consecutiveCaptureFailures = 0
             countFrameAndCalculateFps()
+            val afState = result.get(CaptureResult.CONTROL_AF_STATE)
+            if (afState != null) {
+                val isScanning = afState == CaptureResult.CONTROL_AF_STATE_PASSIVE_SCAN ||
+                    afState == CaptureResult.CONTROL_AF_STATE_ACTIVE_SCAN
+                if (isScanning) {
+                    consecutiveAfScanningFrames++
+                    if (consecutiveAfScanningFrames >= 4 && lastReportedFocusSettled) {
+                        lastReportedFocusSettled = false
+                        onCaptureFocusStateChanged?.invoke(false)
+                    }
+                } else {
+                    consecutiveAfScanningFrames = 0
+                    if (!lastReportedFocusSettled) {
+                        lastReportedFocusSettled = true
+                        onCaptureFocusStateChanged?.invoke(true)
+                    }
+                }
+            }
             if (captureResultCounter++ % 6 == 0) {
                 lowLightBoostEngine.onCaptureResult(result)
             }
@@ -634,7 +672,10 @@ class HighSpeedCamera2Manager(private val context: Context) {
                 forceSafe30Fps = forceSafeFallback,
                 matchArPreferred = currentSharedCamera != null && !forceSafeFallback
             )
-            val targetAfMode = selectOptimalAfMode(characteristics)
+            val targetAfMode = selectOptimalAfMode(
+                characteristics = characteristics,
+                preferVideoAf = currentSharedCamera != null
+            )
 
             val template = if (currentSharedCamera != null && !forceSafeFallback) {
                 CameraDevice.TEMPLATE_RECORD
@@ -647,6 +688,11 @@ class HighSpeedCamera2Manager(private val context: Context) {
                 set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_AUTO)
                 set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, targetFpsRange)
                 set(CaptureRequest.CONTROL_AF_MODE, targetAfMode)
+
+                val antibandingModes = characteristics.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_ANTIBANDING_MODES)
+                if (antibandingModes?.contains(CaptureRequest.CONTROL_AE_ANTIBANDING_MODE_AUTO) == true) {
+                    set(CaptureRequest.CONTROL_AE_ANTIBANDING_MODE, CaptureRequest.CONTROL_AE_ANTIBANDING_MODE_AUTO)
+                }
 
                 if (currentSharedCamera != null) {
                     // Keep deterministic CONTROL_AE_MODE_ON and disable digital EIS crop during SharedCamera AR tracking
@@ -1005,6 +1051,8 @@ class HighSpeedCamera2Manager(private val context: Context) {
             isSwitchingCamera.set(false)
             openRetryCount = 0
             consecutiveCaptureFailures = 0
+            consecutiveAfScanningFrames = 0
+            lastReportedFocusSettled = true
             sessionToClose = captureSession
             captureSession = null
             deviceToClose = cameraDevice
@@ -1033,6 +1081,7 @@ class HighSpeedCamera2Manager(private val context: Context) {
             Log.w(TAG, "Error closing camera: ${e.message}")
         } finally {
             stopBackgroundThread()
+            onCaptureFocusStateChanged?.invoke(true)
         }
     }
 

@@ -759,7 +759,10 @@ fun ModernArCameraView(
         }
     }
 
-    // 7. AR Dialogs
+    // 7. Guided Real-Object Scale Calibration Overlay
+    GuidedCalibrationOverlay(viewModel = viewModel)
+
+    // 8. AR Dialogs
     ArDialogsHost(
         viewModel = viewModel,
         context = context,

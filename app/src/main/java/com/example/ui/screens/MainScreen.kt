@@ -63,6 +63,7 @@ fun MainScreen(viewModel: MeasureViewModel) {
     val isTorchOn by viewModel.isTorchOn.collectAsStateWithLifecycle()
     val showWelcomeScreen by viewModel.showWelcomeScreen.collectAsStateWithLifecycle()
     val gpuRenderPolicy by viewModel.gpuRenderPolicy.collectAsStateWithLifecycle()
+    val guidedCalibrationState by viewModel.guidedCalibrationState.collectAsStateWithLifecycle()
 
     val adaptiveState = rememberAdaptiveWindowState()
 
@@ -78,11 +79,13 @@ fun MainScreen(viewModel: MeasureViewModel) {
 
     val openSettingsActivity: () -> Unit = remember(context) {
         {
-            val appCtx = context.applicationContext ?: context
-            val intent = Intent(appCtx, com.example.SettingsActivity::class.java).apply {
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            val hostActivity = context.findHostActivity()
+            val intent = Intent(hostActivity ?: context, com.example.SettingsActivity::class.java).apply {
+                if (hostActivity == null) {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
             }
-            appCtx.startActivity(intent)
+            (hostActivity ?: context).startActivity(intent)
         }
     }
 
@@ -172,6 +175,17 @@ fun MainScreen(viewModel: MeasureViewModel) {
     // 4. Secondary mode (Ruler -> return to Camera AR Home)
     androidx.activity.compose.BackHandler(enabled = currentMode != 0 && !showWelcomeScreen && !showHistorySheet && !isCompactDetailOpen) {
         viewModel.setMode(0)
+    }
+
+    // 5. Guided Real-Object Calibration Wizard (AR Camera mode -> restore pre-calibration session)
+    androidx.activity.compose.BackHandler(
+        enabled = guidedCalibrationState.isActive &&
+            currentMode == 0 &&
+            !showWelcomeScreen &&
+            !showHistorySheet &&
+            !isCompactDetailOpen
+    ) {
+        viewModel.cancelGuidedCalibration()
     }
 
     val navItems = remember(cameraLabel, rulerLabel) {

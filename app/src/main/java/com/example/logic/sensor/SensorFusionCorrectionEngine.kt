@@ -205,6 +205,10 @@ class SensorFusionCorrectionEngine(context: Context) : SensorEventListener {
     private var lastLockedBurstTimestampMs = 0L
     private var currentEstimatedErrorMm = 1.5f
     private var lastDepthConfidencePenaltyMm = 0f
+    @Volatile
+    private var lastIncidenceCosine = 1.0f
+    @Volatile
+    private var lastRawDepthInlierRatio = -1.0f
     private var isBurstLocked = false
     private var burstProgress = 0.0f
     private var lastOrthogonalSnapped = false
@@ -312,6 +316,25 @@ class SensorFusionCorrectionEngine(context: Context) : SensorEventListener {
     }
 
     /**
+     * Resets transient hover burst and Kalman filter state without altering barometer baseline.
+     */
+    fun resetBurstAveraging() {
+        synchronized(fusionLock) {
+            isKalmanInitialized = false
+            lastRawPoint = null
+            lastFilteredPoint = null
+            lastFusionTimestampNs = 0L
+            burstHead = 0
+            burstCount = 0
+            isBurstLocked = false
+            burstProgress = 0f
+            lastLockedBurstPoint = null
+            lastLockedBurstTimestampMs = 0L
+            syncMultiSampleState()
+        }
+    }
+
+    /**
      * Returns the latest outlier-rejected multi-sample burst centroid if locked and fresh
      * within [maxAgeMs], allowing shutter taps to commit sub-millimeter averaged coordinates.
      */
@@ -327,18 +350,43 @@ class SensorFusionCorrectionEngine(context: Context) : SensorEventListener {
     }
 
     /**
-     * Feeds real-time AR surface depth confidence & grazing geometry into uncertainty estimation.
+     * Feeds real-time AR surface depth confidence, ROI inlier ratio, & grazing geometry
+     * into uncertainty estimation and oblique EKF noise scaling.
      */
-    fun updateSurfaceUncertaintyContext(depthConfidencePercent: Int, surfaceDistanceMeters: Float) {
+    fun updateSurfaceUncertaintyContext(
+        depthConfidencePercent: Int,
+        surfaceDistanceMeters: Float,
+        incidenceCosine: Float = 1.0f,
+        rawDepthInlierRatio: Float = -1f
+    ) {
         synchronized(fusionLock) {
-            val distPenalty = (surfaceDistanceMeters.coerceAtLeast(0.2f) * 0.65f)
+            val clampedCos = incidenceCosine.coerceIn(0.15f, 1.0f)
+            lastIncidenceCosine = clampedCos
+            lastRawDepthInlierRatio = rawDepthInlierRatio
+
+            val obliqueFactor = (1.0f / clampedCos).coerceIn(1.0f, 4.5f)
+            val distPenalty = (surfaceDistanceMeters.coerceAtLeast(0.2f) * 0.65f) *
+                (1.0f + (obliqueFactor - 1.0f) * 0.45f)
             val confPenalty = when {
                 depthConfidencePercent < 0 -> 0.4f // Depth unavailable; rely on VIO plane
                 depthConfidencePercent < 35 -> 2.4f
                 depthConfidencePercent < 60 -> 1.0f
                 else -> 0.0f
             }
-            lastDepthConfidencePenaltyMm = (distPenalty + confPenalty).coerceIn(0f, 8.0f)
+            val inlierPenalty = if (rawDepthInlierRatio in 0f..0.60f) {
+                (0.60f - rawDepthInlierRatio) * 3.0f
+            } else {
+                0.0f
+            }
+            lastDepthConfidencePenaltyMm = (distPenalty + confPenalty + inlierPenalty).coerceIn(0f, 15.0f)
+            syncEstimatedErrorTelemetryLocked()
+        }
+    }
+
+    private fun syncEstimatedErrorTelemetryLocked() {
+        val prev = _telemetry.value
+        if (abs(currentEstimatedErrorMm - prev.estimatedErrorMm) >= 0.15f) {
+            _telemetry.value = prev.copy(estimatedErrorMm = currentEstimatedErrorMm)
         }
     }
 
@@ -435,7 +483,8 @@ class SensorFusionCorrectionEngine(context: Context) : SensorEventListener {
         val hasSignificantChange = pitchDiff >= 0.20f || rollDiff >= 0.20f || azimDiff >= 0.30f ||
                 stabDiff >= 0.05f || isSteady != prev.isHandSteady ||
                 isNearContact != prev.isProximityNear || isBurstLocked != prev.isMultiSampleLocked ||
-                burstDiff >= 0.02f || lastOrthogonalSnapped != prev.isOrthogonalSnapped
+                burstDiff >= 0.02f || lastOrthogonalSnapped != prev.isOrthogonalSnapped ||
+                abs(currentEstimatedErrorMm - prev.estimatedErrorMm) >= 0.15f
 
         if (!hasSignificantChange && timeSinceLastEmit < 50L) {
             return
@@ -618,14 +667,14 @@ class SensorFusionCorrectionEngine(context: Context) : SensorEventListener {
                 targetZ = burstCentroidOut[2]
 
                 val sampleErrMm = (stdErrorMeters * 1000.0).toFloat()
-                currentEstimatedErrorMm = (sampleErrMm + lastDepthConfidencePenaltyMm * 0.5f).coerceIn(0.4f, 10.0f)
+                currentEstimatedErrorMm = (sampleErrMm + lastDepthConfidencePenaltyMm * 0.5f).coerceIn(0.4f, 16.0f)
 
                 if (isBurstLocked) {
                     lastLockedBurstPoint = rawPoint.copy(x = targetX, y = targetY, z = targetZ)
                     lastLockedBurstTimestampMs = now
                 }
             } else {
-                currentEstimatedErrorMm = (3.0f - stability * 1.8f + lastDepthConfidencePenaltyMm).coerceIn(0.8f, 12.0f)
+                currentEstimatedErrorMm = (3.0f - stability * 1.8f + lastDepthConfidencePenaltyMm).coerceIn(0.8f, 18.0f)
             }
             syncMultiSampleState()
 
@@ -635,13 +684,18 @@ class SensorFusionCorrectionEngine(context: Context) : SensorEventListener {
                     ((lastAngularVelocity / 0.20f).toDouble().pow(2) / (1.0 + (lastAngularVelocity / 0.20f).toDouble().pow(2))) * 0.3
             val processNoiseQ = (0.00018 + 0.0045 * motionFactor) * dtScale
 
+            val obliqueNoiseBoost = if (lastIncidenceCosine < 0.45f) {
+                (1.0 / (lastIncidenceCosine * lastIncidenceCosine)).coerceIn(1.0, 5.0)
+            } else {
+                1.0
+            }
             val measurementNoiseR = if (isJerkRejectionEnabled && lastLinearAccel > JERK_THRESHOLD_MPS2) {
                 0.04 // Sudden jolt: damp spike
             } else if (isBurstLocked) {
-                0.00022 // Steady hover MAD-rejected centroid locked
+                0.00022 * (1.0 + (obliqueNoiseBoost - 1.0) * 0.35) // Steady hover MAD-rejected centroid locked
             } else {
-                val baseR = 0.0004 + 0.0014 * (1.0 - motionFactor)
-                baseR.coerceIn(0.00022, 0.006)
+                val baseR = 0.0004 + 0.0014 * (1.0 - motionFactor) * obliqueNoiseBoost
+                baseR.coerceIn(0.00022, 0.010)
             }
 
             // Predict Step
@@ -668,6 +722,7 @@ class SensorFusionCorrectionEngine(context: Context) : SensorEventListener {
                 z = kalmanStateZ
             )
             lastFilteredPoint = filteredPoint
+            syncEstimatedErrorTelemetryLocked()
 
             // Sub-millimeter (0.8mm) micro-deadband only when hand is steady
             if (distFromCallerPrev < 0.0008 && previousPoint != null && isSteady) {

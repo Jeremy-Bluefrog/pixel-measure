@@ -51,6 +51,39 @@ enum class HapticType {
     DOUBLE  // Double pulse for save success
 }
 
+enum class CalibrationStep {
+    INACTIVE,
+    SELECT_REFERENCE,
+    AIM_POINT_1,
+    AIM_POINT_2,
+    REVIEW_RESULT
+}
+
+enum class CalibrationReferencePreset(
+    val lengthMeters: Double,
+    val titleKey: String
+) {
+    ID_CARD(0.0856, "calib_preset_card"),
+    A4_SHORT(0.210, "calib_preset_a4_short"),
+    A4_LONG(0.297, "calib_preset_a4_long"),
+    CUSTOM(0.200, "calib_preset_custom")
+}
+
+data class GuidedCalibrationState(
+    val step: CalibrationStep = CalibrationStep.INACTIVE,
+    val selectedPreset: CalibrationReferencePreset = CalibrationReferencePreset.ID_CARD,
+    val customLengthText: String = "20.0",
+    val customUnit: String = "cm",
+    val referenceMeters: Double = 0.0856,
+    val rawMeasuredMeters: Double? = null,
+    val proposedFactor: Float = 1.0f,
+    val clampedFactor: Float = 1.0f,
+    val isOutOfRecommendedRange: Boolean = false,
+    val errorPercent: Double = 0.0
+) {
+    val isActive: Boolean get() = step != CalibrationStep.INACTIVE
+}
+
 /**
  * Modern, clean ViewModel managing AR measurements, sensor fusion,
  * persistence, unit conversions, and UI state.
@@ -405,6 +438,18 @@ class MeasureViewModel(private val app: Application) : AndroidViewModel(app) {
     private val _trackingStability = MutableStateFlow(ArTrackingStability.default())
     val trackingStability: StateFlow<ArTrackingStability> = _trackingStability.asStateFlow()
 
+    // Real-time Geometry & Environmental Quality Telemetry (shared by EKF, guidance pill & reticle)
+    private val _surfaceQuality = MutableStateFlow(ArSurfaceQuality())
+    val surfaceQuality: StateFlow<ArSurfaceQuality> = _surfaceQuality.asStateFlow()
+    private var lastSurfaceQualityEmitMs: Long = 0L
+
+    // Guided Real-Object Calibration Wizard State
+    private val _guidedCalibrationState = MutableStateFlow(GuidedCalibrationState())
+    val guidedCalibrationState: StateFlow<GuidedCalibrationState> = _guidedCalibrationState.asStateFlow()
+    private var savedPointsBeforeCalibration: List<Point3D>? = null
+    private var savedSubModeBeforeCalibration: Int = 0
+    private var savedAreaPlanePoseBeforeCalibration: Pose? = null
+
     private val _isDepthAvailable = MutableStateFlow(false)
     val isDepthAvailable: StateFlow<Boolean> = _isDepthAvailable.asStateFlow()
 
@@ -504,6 +549,12 @@ class MeasureViewModel(private val app: Application) : AndroidViewModel(app) {
 
     private val _isSnapped = MutableStateFlow(false)
     val isSnapped: StateFlow<Boolean> = _isSnapped.asStateFlow()
+
+    private val _isCameraFocusSettled = MutableStateFlow(true)
+    val isCameraFocusSettled: StateFlow<Boolean> = _isCameraFocusSettled.asStateFlow()
+
+    private val _isImageEdgeSnapped = MutableStateFlow(false)
+    val isImageEdgeSnapped: StateFlow<Boolean> = _isImageEdgeSnapped.asStateFlow()
 
     // Torch / Flashlight state & Brightness control
     private val _isTorchOn = MutableStateFlow(false)
@@ -1266,6 +1317,192 @@ class MeasureViewModel(private val app: Application) : AndroidViewModel(app) {
         emitSettingToast(trFmt("vm_toast_scale_fmt", "%.4f".format(Locale.US, clamped)))
     }
 
+    fun requestGuidedCalibrationFromSettings() {
+        prefs.edit().putBoolean("pending_guided_calibration", true).apply()
+        triggerHapticFeedback(HapticType.CLICK)
+    }
+
+    fun parseCalibrationLengthMeters(text: String, unit: String): Double {
+        val normalized = text.trim().replace(',', '.')
+        val rawVal = normalized.toDoubleOrNull() ?: return 0.0
+        if (!rawVal.isFinite() || rawVal <= 0.0) return 0.0
+        val meters = when (unit) {
+            "mm" -> rawVal / 1000.0
+            "cm" -> rawVal / 100.0
+            "m" -> rawVal
+            "in" -> rawVal * 0.0254
+            "ft" -> rawVal * 0.3048
+            else -> rawVal / 100.0
+        }
+        return if (meters.isFinite() && meters in 0.02..5.0) meters else 0.0
+    }
+
+    fun startGuidedCalibration() {
+        if (_guidedCalibrationState.value.isActive) return
+        synchronized(pointsLock) {
+            if (savedPointsBeforeCalibration == null) {
+                savedPointsBeforeCalibration = capturedPoints.toList()
+                savedSubModeBeforeCalibration = _cameraSubMode.value
+                savedAreaPlanePoseBeforeCalibration = activeAreaPlanePose
+            }
+            capturedPoints.clear()
+            updateCapturedPointsSnapshotCache()
+        }
+        activeAreaPlanePose = null
+        _cameraSubMode.value = 0
+        _currentMode.value = 0
+        _liveDistanceMeters.value = null
+        _liveAngleDegrees.value = null
+        _guidedCalibrationState.value = GuidedCalibrationState(
+            step = CalibrationStep.SELECT_REFERENCE,
+            selectedPreset = CalibrationReferencePreset.ID_CARD,
+            customLengthText = "20.0",
+            customUnit = "cm",
+            referenceMeters = CalibrationReferencePreset.ID_CARD.lengthMeters
+        )
+        triggerHapticFeedback(HapticType.CLICK)
+    }
+
+    fun selectCalibrationPreset(preset: CalibrationReferencePreset) {
+        val cur = _guidedCalibrationState.value
+        val refMeters = if (preset == CalibrationReferencePreset.CUSTOM) {
+            parseCalibrationLengthMeters(cur.customLengthText, cur.customUnit)
+        } else {
+            preset.lengthMeters
+        }
+        _guidedCalibrationState.value = cur.copy(
+            selectedPreset = preset,
+            referenceMeters = refMeters
+        )
+        triggerHapticFeedback(HapticType.CLICK)
+    }
+
+    fun updateCalibrationCustomInput(text: String, unit: String = _guidedCalibrationState.value.customUnit) {
+        val cur = _guidedCalibrationState.value
+        val refMeters = parseCalibrationLengthMeters(text, unit)
+        _guidedCalibrationState.value = cur.copy(
+            selectedPreset = CalibrationReferencePreset.CUSTOM,
+            customLengthText = text,
+            customUnit = unit,
+            referenceMeters = refMeters
+        )
+    }
+
+    fun beginCalibrationAiming() {
+        val cur = _guidedCalibrationState.value
+        if (cur.referenceMeters !in 0.02..5.0) return
+        synchronized(pointsLock) {
+            capturedPoints.forEach { pt ->
+                try { pt.anchor?.detach() } catch (_: Throwable) {}
+            }
+            capturedPoints.clear()
+            updateCapturedPointsSnapshotCache()
+        }
+        _liveDistanceMeters.value = null
+        _cameraSubMode.value = 0
+        _guidedCalibrationState.value = cur.copy(
+            step = CalibrationStep.AIM_POINT_1,
+            rawMeasuredMeters = null,
+            proposedFactor = 1.0f,
+            clampedFactor = 1.0f,
+            isOutOfRecommendedRange = false,
+            errorPercent = 0.0
+        )
+        triggerHapticFeedback(HapticType.CLICK)
+    }
+
+    fun remeasureCalibration() {
+        beginCalibrationAiming()
+    }
+
+    fun applyGuidedCalibration() {
+        val cur = _guidedCalibrationState.value
+        if (cur.step != CalibrationStep.REVIEW_RESULT) return
+        val finalFactor = cur.clampedFactor.coerceIn(0.90f, 1.10f)
+        setScaleCalibrationFactor(finalFactor)
+        sensorCorrectionEngine.resetBurstAveraging()
+        modernArEngine.resetTemporalDepthBuffer()
+        restorePreCalibrationSessionState()
+        triggerHapticFeedback(HapticType.DOUBLE)
+    }
+
+    fun resetScaleCalibrationToUnity() {
+        setScaleCalibrationFactor(1.0000f)
+        sensorCorrectionEngine.resetBurstAveraging()
+        modernArEngine.resetTemporalDepthBuffer()
+        if (_guidedCalibrationState.value.isActive) {
+            restorePreCalibrationSessionState()
+        }
+        triggerHapticFeedback(HapticType.CLICK)
+    }
+
+    fun cancelGuidedCalibration() {
+        if (!_guidedCalibrationState.value.isActive) return
+        restorePreCalibrationSessionState()
+        triggerHapticFeedback(HapticType.CLICK)
+    }
+
+    private fun restorePreCalibrationSessionState() {
+        synchronized(pointsLock) {
+            capturedPoints.forEach { pt ->
+                try { pt.anchor?.detach() } catch (_: Throwable) {}
+            }
+            capturedPoints.clear()
+            val backup = savedPointsBeforeCalibration
+            if (backup != null) {
+                capturedPoints.addAll(backup)
+            }
+            savedPointsBeforeCalibration = null
+            updateCapturedPointsSnapshotCache()
+        }
+        _cameraSubMode.value = savedSubModeBeforeCalibration
+        activeAreaPlanePose = savedAreaPlanePoseBeforeCalibration
+        savedAreaPlanePoseBeforeCalibration = null
+        _liveDistanceMeters.value = null
+        _liveAngleDegrees.value = null
+        updateAutoDetectedGeometry()
+        _guidedCalibrationState.value = GuidedCalibrationState()
+    }
+
+    private fun evaluateCalibrationStepOnPointAdded() {
+        val cur = _guidedCalibrationState.value
+        if (cur.step != CalibrationStep.AIM_POINT_1 && cur.step != CalibrationStep.AIM_POINT_2) return
+        val pts = synchronized(pointsLock) {
+            if (capturedPoints.size != capturedPointsSnapshotCache.size) {
+                capturedPointsSnapshotCache = capturedPoints.toList()
+            }
+            capturedPointsSnapshotCache
+        }
+        if (pts.size == 1 && cur.step == CalibrationStep.AIM_POINT_1) {
+            _guidedCalibrationState.value = cur.copy(step = CalibrationStep.AIM_POINT_2)
+        } else if (pts.size >= 2) {
+            val rawMeters = ArMath.distance(pts[0], pts[1])
+            val k = ArMath.computeCalibratedScaleFactor(cur.referenceMeters, rawMeters)
+            if (k.isNaN() || !k.isFinite()) {
+                _guidedCalibrationState.value = cur.copy(
+                    step = CalibrationStep.REVIEW_RESULT,
+                    rawMeasuredMeters = rawMeters,
+                    proposedFactor = 1.0f,
+                    clampedFactor = 1.0f,
+                    isOutOfRecommendedRange = true,
+                    errorPercent = 100.0
+                )
+            } else {
+                val clamped = k.toFloat().coerceIn(0.90f, 1.10f)
+                val outOfRange = k !in 0.90..1.10
+                val errPct = ((rawMeters - cur.referenceMeters) / cur.referenceMeters) * 100.0
+                _guidedCalibrationState.value = cur.copy(
+                    step = CalibrationStep.REVIEW_RESULT,
+                    rawMeasuredMeters = rawMeters,
+                    proposedFactor = k.toFloat(),
+                    clampedFactor = clamped,
+                    isOutOfRecommendedRange = outOfRange,
+                    errorPercent = errPct
+                )
+            }
+        }
+    }
+
 
     fun calibrateSensors() {
         sensorCorrectionEngine.resetBarometerBase()
@@ -1485,6 +1722,10 @@ class MeasureViewModel(private val app: Application) : AndroidViewModel(app) {
             if (consumePendingWelcome && prefs.getBoolean("pending_replay_welcome", false)) {
                 prefs.edit().remove("pending_replay_welcome").apply()
                 _showWelcomeScreen.value = true
+            }
+            if (consumePendingWelcome && prefs.getBoolean("pending_guided_calibration", false)) {
+                prefs.edit().remove("pending_guided_calibration").apply()
+                startGuidedCalibration()
             }
             val diskLang = prefs.getString("selected_language", _currentLanguage.value) ?: _currentLanguage.value
             if (diskLang != _currentLanguage.value) {
@@ -1731,8 +1972,11 @@ class MeasureViewModel(private val app: Application) : AndroidViewModel(app) {
             }
             sensorCorrectionEngine.updateSurfaceUncertaintyContext(
                 depthConfidencePercent = centerHit.depthConfidencePercent,
-                surfaceDistanceMeters = centerHit.distance
+                surfaceDistanceMeters = centerHit.distance,
+                incidenceCosine = centerHit.incidenceCosine,
+                rawDepthInlierRatio = centerHit.rawDepthInlierRatio
             )
+            emitSurfaceQualitySnapshot(centerHit)
             val pose = centerHit.pose
             val rawPoint = Point3D(
                 x = pose.tx().toDouble(),
@@ -1807,6 +2051,10 @@ class MeasureViewModel(private val app: Application) : AndroidViewModel(app) {
             } else {
                 _isSnapped.value = false
             }
+            val edgeLocked = (snappedVertex == null) && centerHit.isImageEdgeSnapped
+            if (_isImageEdgeSnapped.value != edgeLocked) {
+                _isImageEdgeSnapped.value = edgeLocked
+            }
 
             val prevTarget = _liveTargetPoint.value
             if (prevTarget == null || ArMath.distance(prevTarget, finalTargetPoint) > 0.0005) {
@@ -1847,7 +2095,10 @@ class MeasureViewModel(private val app: Application) : AndroidViewModel(app) {
             }
 
             // 4. Calculate live real-time distance & angle with single application of scaleCalibrationFactor
-            val userScale = scaleCalibrationFactor.value.toDouble()
+            // Force raw 1.000x uncalibrated coordinate preview while inside guided calibration aiming
+            val calStep = _guidedCalibrationState.value.step
+            val isCalibAiming = calStep == CalibrationStep.AIM_POINT_1 || calStep == CalibrationStep.AIM_POINT_2
+            val userScale = if (isCalibAiming) 1.0 else scaleCalibrationFactor.value.toDouble()
             if (subModeNow == 5 && pointsSnapshot.size == 2) {
                 val angleLive = ArMath.calculateAngleDegrees(pointsSnapshot[0], pointsSnapshot[1], finalTargetPoint)
                 _liveAngleDegrees.value = if (!angleLive.isNaN() && !angleLive.isInfinite()) angleLive else null
@@ -1879,6 +2130,9 @@ class MeasureViewModel(private val app: Application) : AndroidViewModel(app) {
                 _liveDistanceMeters.value = smoothLiveDistance(centerDist)
             }
         } else {
+            if (_isImageEdgeSnapped.value) {
+                _isImageEdgeSnapped.value = false
+            }
             // Surface tracking grace window: hold previous live target for up to 350ms during fast pan
             val now = System.currentTimeMillis()
             if (now - lastValidHitTimestampMs > 350L) {
@@ -1904,7 +2158,8 @@ class MeasureViewModel(private val app: Application) : AndroidViewModel(app) {
                         val dx = lockedBurst.x - rawX
                         val dy = lockedBurst.y - rawY
                         val dz = lockedBurst.z - rawZ
-                        if (dx * dx + dy * dy + dz * dz <= 0.025 * 0.025) {
+                        val maxBurstDelta = (0.018 + hitResult.distance * 0.008).coerceIn(0.018, 0.065)
+                        if (dx * dx + dy * dy + dz * dz <= maxBurstDelta * maxBurstDelta) {
                             rawX = lockedBurst.x
                             rawY = lockedBurst.y
                             rawZ = lockedBurst.z
@@ -2140,6 +2395,7 @@ class MeasureViewModel(private val app: Application) : AndroidViewModel(app) {
             updateCapturedPointsSnapshotCache()
         }
         updateAutoDetectedGeometry()
+        evaluateCalibrationStepOnPointAdded()
         triggerHapticFeedback(if (isClosingLine) HapticType.HEAVY else HapticType.CLICK)
         if (isClosingLine && _autoCopyOnComplete.value) {
             val formatted = getPrimaryMeasurementDisplayString()
@@ -2153,6 +2409,38 @@ class MeasureViewModel(private val app: Application) : AndroidViewModel(app) {
         } else {
             _toastMessage.tryEmit(successToast)
         }
+    }
+
+    private fun emitSurfaceQualitySnapshot(centerHit: HitTestResult) {
+        val now = System.currentTimeMillis()
+        val stab = _trackingStability.value
+        val warning = when {
+            stab.isLightingDeficient -> GeometryWarning.LOW_LIGHT
+            stab.isFeatureDeficient || (centerHit.rawDepthInlierRatio in 0f..0.449f) -> GeometryWarning.LOW_TEXTURE_WALL
+            centerHit.hasSurfaceNormal && centerHit.incidenceCosine < 0.42f -> GeometryWarning.OBLIQUE_ANGLE
+            centerHit.distance > 3.5f -> GeometryWarning.LONG_RANGE
+            else -> GeometryWarning.NONE
+        }
+        val prev = _surfaceQuality.value
+        val errMm = sensorCorrectionEngine.telemetry.value.estimatedErrorMm
+        val warningChanged = prev.warning != warning
+        if (!warningChanged && (now - lastSurfaceQualityEmitMs < 110L) &&
+            kotlin.math.abs(prev.estimatedErrorMm - errMm) < 0.4f &&
+            kotlin.math.abs(prev.incidenceCosine - centerHit.incidenceCosine) < 0.08f
+        ) {
+            return
+        }
+        lastSurfaceQualityEmitMs = now
+        _surfaceQuality.value = ArSurfaceQuality(
+            warning = warning,
+            incidenceCosine = centerHit.incidenceCosine,
+            distanceMeters = centerHit.distance,
+            rawDepthInlierRatio = centerHit.rawDepthInlierRatio,
+            depthConfidencePercent = centerHit.depthConfidencePercent,
+            estimatedErrorMm = errMm,
+            hitTypeName = centerHit.hitType.name,
+            isHighPrecision = !centerHit.isApproximatePlacement && warning == GeometryWarning.NONE
+        )
     }
 
 
@@ -2369,6 +2657,7 @@ class MeasureViewModel(private val app: Application) : AndroidViewModel(app) {
             updateCapturedPointsSnapshotCache()
         }
         updateAutoDetectedGeometry()
+        evaluateCalibrationStepOnPointAdded()
         triggerHapticFeedback(if (isClosingPoint) HapticType.HEAVY else HapticType.CLICK)
         if (isClosingPoint && _autoCopyOnComplete.value) {
             val formatted = getPrimaryMeasurementDisplayString()
@@ -2507,6 +2796,11 @@ class MeasureViewModel(private val app: Application) : AndroidViewModel(app) {
         _liveDistanceMeters.value = null
         _liveAngleDegrees.value = null
         _autoDetectedType.value = "DISTANCE"
+        _isSnapped.value = false
+        _isImageEdgeSnapped.value = false
+        _surfaceQuality.value = ArSurfaceQuality()
+        sensorCorrectionEngine.resetBurstAveraging()
+        modernArEngine.resetTemporalDepthBuffer()
         triggerHapticFeedback()
     }
 
@@ -2530,8 +2824,13 @@ class MeasureViewModel(private val app: Application) : AndroidViewModel(app) {
         _liveAngleDegrees.value = null
         _liveTargetScreenPos.value = null
         _isSnapped.value = false
+        _isImageEdgeSnapped.value = false
+        _isCameraFocusSettled.value = true
+        _surfaceQuality.value = ArSurfaceQuality()
         _isMeasurementAvailable.value = false
         _isSurfaceNormalLocked.value = false
+        sensorCorrectionEngine.resetBurstAveraging()
+        modernArEngine.resetTemporalDepthBuffer()
         frameNormalSlerp.reset()
         lastArFrameTimestampNs = 0L
         surfaceNormalScratch[0] = 0f
@@ -2602,6 +2901,11 @@ class MeasureViewModel(private val app: Application) : AndroidViewModel(app) {
                 modernArEngine.pause()
             }
             manager.isArCoreResumedChecker = { modernArEngine.isSessionResumed }
+            manager.onCaptureFocusStateChanged = { isSettled ->
+                if (_isCameraFocusSettled.value != isSettled) {
+                    _isCameraFocusSettled.value = isSettled
+                }
+            }
             val sc = modernArEngine.sharedCamera
             if (sc != null) {
                 manager.sharedCamera = sc
@@ -2702,8 +3006,8 @@ class MeasureViewModel(private val app: Application) : AndroidViewModel(app) {
             success = modernArEngine.setTorchMode(newState)
         }
 
-        // 1. Standalone HighSpeedCamera2Manager CaptureRequest repeating update
-        if (!success && highSpeedCamera2Manager != null) {
+        // 1. Standalone HighSpeedCamera2Manager CaptureRequest repeating update (skipped if SharedCamera owns session)
+        if (!success && !isArSharedActive && highSpeedCamera2Manager != null) {
             try {
                 success = highSpeedCamera2Manager?.toggleTorch(newState) == true
             } catch (e: Exception) {

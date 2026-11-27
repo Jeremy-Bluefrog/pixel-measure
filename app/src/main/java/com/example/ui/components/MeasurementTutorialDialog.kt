@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.ArrowForward
 import androidx.compose.material.icons.rounded.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -267,7 +268,7 @@ fun MeasurementTutorialDialog(
                         )
                         Spacer(modifier = Modifier.width(6.dp))
                         Icon(
-                            if (currentStep < 2) Icons.Rounded.ArrowForward else Icons.Rounded.Check,
+                            if (currentStep < 2) Icons.AutoMirrored.Rounded.ArrowForward else Icons.Rounded.Check,
                             contentDescription = null,
                             modifier = Modifier.size(16.dp)
                         )

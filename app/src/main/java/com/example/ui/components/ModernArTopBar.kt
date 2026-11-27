@@ -28,6 +28,8 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -73,6 +75,8 @@ fun ModernArTopBar(
     val colorOnSurface = MaterialTheme.colorScheme.onSurface
     val colorOnSurfaceVariant = MaterialTheme.colorScheme.onSurfaceVariant
 
+    val scaleCalibrationFactor by viewModel.scaleCalibrationFactor.collectAsStateWithLifecycle()
+    val currentLang = com.example.ui.i18n.LocalAppLanguage.current
     var showTorchBrightnessMenu by remember { mutableStateOf(false) }
 
     Column(
@@ -181,6 +185,27 @@ fun ModernArTopBar(
                                 modifier = Modifier.testTag("submode_menu_item_$modeId")
                             )
                         }
+                        HorizontalDivider(
+                            color = colorOutlineVariant.copy(alpha = 0.45f),
+                            modifier = Modifier.padding(vertical = 4.dp)
+                        )
+                        DropdownMenuItem(
+                            text = {
+                                Text(
+                                    tr("topbar_menu_calibrate"),
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = colorPrimary
+                                )
+                            },
+                            leadingIcon = {
+                                Icon(Icons.Rounded.Straighten, null, tint = colorPrimary)
+                            },
+                            onClick = {
+                                showSubModeMenu = false
+                                viewModel.startGuidedCalibration()
+                            },
+                            modifier = Modifier.testTag("menu_guided_calibration")
+                        )
                     }
                 }
 
@@ -606,7 +631,62 @@ fun ModernArTopBar(
                     }
                 }
             } else {
-                ArDetectedPlanesIndicator(planesCount = planesCount)
+                val showScalePill = kotlin.math.abs(scaleCalibrationFactor - 1.0f) > 0.002f
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    ArDetectedPlanesIndicator(planesCount = planesCount)
+                    if (showScalePill) {
+                        val pillDesc = com.example.logic.TranslationManager.formatString(
+                            "calib_pill_desc_fmt",
+                            currentLang,
+                            scaleCalibrationFactor
+                        )
+                        Box(
+                            contentAlignment = Alignment.Center,
+                            modifier = Modifier
+                                .heightIn(min = 48.dp)
+                                .clip(CircleShape)
+                                .clickable {
+                                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                    viewModel.startGuidedCalibration()
+                                }
+                                .semantics(mergeDescendants = true) {
+                                    contentDescription = pillDesc
+                                }
+                                .testTag("calibration_factor_pill")
+                        ) {
+                            Surface(
+                                color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.88f),
+                                contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                                shape = CircleShape,
+                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.secondary.copy(alpha = 0.45f)),
+                                shadowElevation = 0.dp
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(5.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Rounded.Straighten,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                                        modifier = Modifier.size(13.dp)
+                                    )
+                                    Text(
+                                        text = String.format(java.util.Locale.US, "%.3fx", scaleCalibrationFactor),
+                                        style = ExpressiveTypography.labelNumeral,
+                                        color = MaterialTheme.colorScheme.onSecondaryContainer,
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 11.sp
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
 

@@ -252,8 +252,10 @@ private fun buildDeepGaussianChainEffect(
 class GradientBlurBackdropState internal constructor(
     internal val graphicsLayer: GraphicsLayer
 ) {
-    internal var sourcePositionInRoot by mutableStateOf(Offset.Zero)
-    internal var sourceSize by mutableStateOf(IntSize.Zero)
+    @Volatile
+    internal var sourcePositionInRoot: Offset = Offset.Zero
+    @Volatile
+    internal var sourceSize: IntSize = IntSize.Zero
     @Volatile
     internal var isRecording: Boolean = false
     private val activeConsumerCount = java.util.concurrent.atomic.AtomicInteger(0)
@@ -541,12 +543,16 @@ fun Modifier.progressiveBackdropBlur(
         }
     }
 
-    var targetPositionInRoot by remember { mutableStateOf(Offset.Zero) }
+    val targetPosHolder = remember {
+        object {
+            var position = Offset.Zero
+        }
+    }
     val cache = remember { BackdropBlurCache() }
 
     clippedBase
         .onGloballyPositioned { coords ->
-            targetPositionInRoot = coords.positionInRoot()
+            targetPosHolder.position = coords.positionInRoot()
         }
         .drawBehind {
             val sourceSize = backdropState.sourceSize
@@ -618,7 +624,7 @@ fun Modifier.progressiveBackdropBlur(
                     } else null
                 }
 
-                val offset = backdropState.sourcePositionInRoot - targetPositionInRoot
+                val offset = backdropState.sourcePositionInRoot - targetPosHolder.position
                 val recordSize = IntSize(recWInt, recHInt)
                 val upscaleX = w / recW
                 val upscaleY = h / recH

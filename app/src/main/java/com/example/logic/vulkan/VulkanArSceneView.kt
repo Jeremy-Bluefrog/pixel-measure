@@ -363,6 +363,7 @@ class VulkanArSceneView(
                         if (!hasPendingTap) return@withLockedSessionUpdate
                     }
                     lastArFrameTimestampNs = frameTimestamp
+                    hardwareBufferManager.recordFrameHandoff(hasHardwareBuffer = true)
                     viewModel?.processVulkanFrame(frame, arEngine)
                 } else if (arEngine.makeGlContextCurrent()) {
                     try {
@@ -376,6 +377,7 @@ class VulkanArSceneView(
                             if (!hasPendingTap) return@withLockedSessionUpdate
                         }
                         lastArFrameTimestampNs = frameTimestamp
+                        hardwareBufferManager.recordFrameHandoff(hasHardwareBuffer = false)
                         viewModel?.processVulkanFrame(frame, arEngine)
                     } finally {
                         arEngine.detachGlContext()

@@ -148,6 +148,21 @@ class VulkanHardwareBufferManager(
         }
     }
 
+    /**
+     * Records a synchronized AR/Vulkan frame handoff tick from the active render loop.
+     * Increments [producedFrames] on every handoff and promotes [acquiredFrames] when
+     * hardware-buffer sharing is active.
+     */
+    fun recordFrameHandoff(hasHardwareBuffer: Boolean) {
+        synchronized(this) {
+            if (isReleased) return
+            producedFrames++
+            if (hasHardwareBuffer || inUseBuffer != null) {
+                acquiredFrames++
+            }
+        }
+    }
+
     fun getStats(): HardwareBufferStats {
         synchronized(this) {
             return HardwareBufferStats(

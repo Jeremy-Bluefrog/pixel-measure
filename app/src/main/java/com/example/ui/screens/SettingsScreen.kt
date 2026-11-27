@@ -428,6 +428,10 @@ fun SettingsScreen(
                 onShowPointCloudChange = { viewModel.setShowPointCloud(it) },
                 onVertexSnapChange = { viewModel.setVertexSnapThresholdCm(it) },
                 onScaleCalibrationChange = { viewModel.setScaleCalibrationFactor(it) },
+                onStartGuidedCalibration = {
+                    viewModel.requestGuidedCalibrationFromSettings()
+                    onNavigateBack()
+                },
                 onNavigateBack = { setActiveSubPage(SettingsSubPage.NONE) }
             )
             SettingsSubPage.CAMERA_QUALITY -> CameraQualityPage(

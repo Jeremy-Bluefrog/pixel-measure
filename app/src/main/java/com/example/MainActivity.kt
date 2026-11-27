@@ -30,7 +30,7 @@ class MainActivity : ComponentActivity() {
         if (isWide) {
             window.colorMode = android.content.pm.ActivityInfo.COLOR_MODE_WIDE_COLOR_GAMUT
         }
-        enforceHighDisplayRefreshRate()
+        enforceHighDisplayRefreshRate(120.0f)
 
         // Initialize the measuring tool viewmodel
         viewModel = ViewModelProvider(this)[MeasureViewModel::class.java]

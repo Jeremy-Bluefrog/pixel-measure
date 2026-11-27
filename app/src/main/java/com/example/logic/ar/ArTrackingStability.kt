@@ -44,3 +44,31 @@ data class ArTrackingStability(
         )
     }
 }
+
+/**
+ * Real-time surface geometry & environmental quality warning classification
+ * shared between AR hit reconstruction, sensor fusion EKF/Burst uncertainty,
+ * and the AR HUD guidance pill & reticle color indicator.
+ */
+enum class GeometryWarning {
+    NONE,
+    LOW_LIGHT,
+    LOW_TEXTURE_WALL,
+    OBLIQUE_ANGLE,
+    LONG_RANGE
+}
+
+/**
+ * Snapshot of current AR target surface geometry quality & error budget.
+ */
+data class ArSurfaceQuality(
+    val warning: GeometryWarning = GeometryWarning.NONE,
+    val incidenceCosine: Float = 1.0f,
+    val distanceMeters: Float = 0f,
+    val rawDepthInlierRatio: Float = -1f,
+    val depthConfidencePercent: Int = -1,
+    val estimatedErrorMm: Float = 2.0f,
+    val hitTypeName: String = "NONE",
+    val isHighPrecision: Boolean = true
+)
+

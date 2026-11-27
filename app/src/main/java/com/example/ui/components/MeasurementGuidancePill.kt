@@ -32,11 +32,15 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.logic.TranslationManager
 import com.example.logic.ar.ArCoreEngineStatus
+import com.example.logic.ar.GeometryWarning
 import com.example.ui.i18n.LocalAppLanguage
 import com.example.ui.theme.ExpressiveCookie8Shape
 import com.example.ui.theme.ExpressiveMotion
 import com.example.ui.theme.ExpressiveTypography
+import com.example.ui.viewmodel.CalibrationStep
 import com.example.ui.viewmodel.MeasureViewModel
+import kotlin.math.acos
+import kotlin.math.roundToInt
 
 /**
  * Pure visual dynamic guidance pill HUD enhanced with Material 3 Expressive motion & morphing indicator:
@@ -64,15 +68,22 @@ fun MeasurementGuidancePill(
     val liveDistanceMeters by viewModel.liveDistanceMeters.collectAsStateWithLifecycle()
     val liveAngleDegrees by viewModel.liveAngleDegrees.collectAsStateWithLifecycle()
     val selectedUnit by viewModel.selectedUnit.collectAsStateWithLifecycle()
+    val surfaceQuality by viewModel.surfaceQuality.collectAsStateWithLifecycle()
+    val guidedCalibrationState by viewModel.guidedCalibrationState.collectAsStateWithLifecycle()
+    val isCameraFocusSettled by viewModel.isCameraFocusSettled.collectAsStateWithLifecycle()
+    val isImageEdgeSnapped by viewModel.isImageEdgeSnapped.collectAsStateWithLifecycle()
     val currentLang = LocalAppLanguage.current
 
     val isScanningPlanes = arCoreStatus == ArCoreEngineStatus.ACTIVE &&
         !isSnapped &&
         !isWaitingForSecondPoint &&
-        !isMeasurementAvailable
+        !isMeasurementAvailable &&
+        !guidedCalibrationState.isActive &&
+        isCameraFocusSettled &&
+        surfaceQuality.warning == GeometryWarning.NONE
 
     val infiniteTransition = rememberInfiniteTransition(label = "GuidancePillPulse")
-    val pulseScale by if (isSnapped) {
+    val pulseScale by if (isSnapped || isImageEdgeSnapped) {
         infiniteTransition.animateFloat(
             initialValue = 0.94f,
             targetValue = 1.08f,
@@ -94,11 +105,15 @@ fun MeasurementGuidancePill(
         capturedPointsCount,
         isMeasurementAvailable,
         isSnapped,
+        isCameraFocusSettled,
+        isImageEdgeSnapped,
         subMode,
         autoDetectedType,
         liveDistanceMeters,
         liveAngleDegrees,
         selectedUnit,
+        surfaceQuality,
+        guidedCalibrationState,
         arCoreStatus,
         arCoreStatusMessage,
         currentLang,
@@ -121,11 +136,80 @@ fun MeasurementGuidancePill(
                     cs.error
                 )
             }
+            guidedCalibrationState.step == CalibrationStep.AIM_POINT_1 -> {
+                val refStr = viewModel.formatLength(guidedCalibrationState.referenceMeters, selectedUnit)
+                Quad(
+                    Icons.Rounded.CenterFocusStrong,
+                    TranslationManager.getString("calib_guide_p1_title", currentLang),
+                    TranslationManager.formatString("calib_guide_sub_fmt", currentLang, refStr),
+                    cs.primary
+                )
+            }
+            guidedCalibrationState.step == CalibrationStep.AIM_POINT_2 -> {
+                val displayStr = liveDistanceMeters?.let { viewModel.formatLength(it, selectedUnit) }
+                    ?: viewModel.formatLength(guidedCalibrationState.referenceMeters, selectedUnit)
+                Quad(
+                    Icons.Rounded.Straighten,
+                    TranslationManager.getString("calib_guide_p2_title", currentLang),
+                    TranslationManager.formatString("calib_guide_sub_fmt", currentLang, displayStr),
+                    cs.primary
+                )
+            }
             isSnapped -> {
                 Quad(
                     Icons.Rounded.AllInclusive,
                     TranslationManager.getString("guide_snap_title", currentLang),
                     TranslationManager.getString("guide_snap_sub", currentLang),
+                    cs.primary
+                )
+            }
+            arCoreStatus == ArCoreEngineStatus.ACTIVE && surfaceQuality.warning == GeometryWarning.LOW_LIGHT -> {
+                Quad(
+                    Icons.Rounded.WbTwilight,
+                    TranslationManager.getString("warn_low_light_title", currentLang),
+                    TranslationManager.getString("warn_low_light_sub", currentLang),
+                    cs.error
+                )
+            }
+            arCoreStatus == ArCoreEngineStatus.ACTIVE && surfaceQuality.warning == GeometryWarning.LOW_TEXTURE_WALL -> {
+                Quad(
+                    Icons.Rounded.GridOff,
+                    TranslationManager.getString("warn_low_texture_title", currentLang),
+                    TranslationManager.getString("warn_low_texture_sub", currentLang),
+                    cs.error
+                )
+            }
+            arCoreStatus == ArCoreEngineStatus.ACTIVE && surfaceQuality.warning == GeometryWarning.OBLIQUE_ANGLE -> {
+                val tiltDeg = Math.toDegrees(acos(surfaceQuality.incidenceCosine.coerceIn(0f, 1f).toDouble())).roundToInt()
+                Quad(
+                    Icons.Rounded.ChangeHistory,
+                    TranslationManager.getString("warn_oblique_title", currentLang),
+                    TranslationManager.formatString("warn_oblique_sub_fmt", currentLang, tiltDeg),
+                    cs.tertiary
+                )
+            }
+            arCoreStatus == ArCoreEngineStatus.ACTIVE && surfaceQuality.warning == GeometryWarning.LONG_RANGE -> {
+                val distStr = viewModel.formatLength(surfaceQuality.distanceMeters.toDouble(), selectedUnit)
+                Quad(
+                    Icons.Rounded.SocialDistance,
+                    TranslationManager.getString("warn_long_range_title", currentLang),
+                    TranslationManager.formatString("warn_long_range_sub_fmt", currentLang, distStr),
+                    cs.tertiary
+                )
+            }
+            arCoreStatus == ArCoreEngineStatus.ACTIVE && !isCameraFocusSettled -> {
+                Quad(
+                    Icons.Rounded.CenterFocusWeak,
+                    TranslationManager.getString("guide_focus_title", currentLang),
+                    TranslationManager.getString("guide_focus_sub", currentLang),
+                    cs.secondary
+                )
+            }
+            isImageEdgeSnapped && !isSnapped -> {
+                Quad(
+                    Icons.Rounded.FilterCenterFocus,
+                    TranslationManager.getString("guide_edge_snap_title", currentLang),
+                    TranslationManager.getString("guide_edge_snap_sub", currentLang),
                     cs.primary
                 )
             }

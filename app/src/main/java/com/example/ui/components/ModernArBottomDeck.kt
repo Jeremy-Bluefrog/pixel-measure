@@ -213,7 +213,11 @@ fun ModernArBottomDeck(
                 label = "addFabCornerRadius"
             )
             val addFabScale by animateFloatAsState(
-                targetValue = if (isMeasurementAvailable) 1.03f else 0.96f,
+                targetValue = when {
+                    isAddFabPressed && isMeasurementAvailable -> 0.94f
+                    isMeasurementAvailable -> 1.03f
+                    else -> 0.96f
+                },
                 animationSpec = ExpressiveMotion.spatialFast(),
                 label = "addFabScale"
             )

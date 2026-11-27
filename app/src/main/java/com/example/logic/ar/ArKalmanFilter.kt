@@ -8,8 +8,8 @@ import kotlin.math.sqrt
  * eliminating jitter, tremor, and flickering during rapid camera movement.
  */
 class ArKalmanFilter3D(
-    private var processNoise: Float = 0.004f,
-    private var measurementNoise: Float = 0.035f
+    private var processNoise: Float = 0.0015f,
+    private var measurementNoise: Float = 0.008f
 ) {
     private var x = 0.0 // position X
     private var y = 0.0 // position Y
@@ -19,12 +19,12 @@ class ArKalmanFilter3D(
     private var vz = 0.0 // velocity Z
 
     // Error covariance matrix diagonal elements
-    private var pX = 0.1
-    private var pY = 0.1
-    private var pZ = 0.1
-    private var pVx = 1.0
-    private var pVy = 1.0
-    private var pVz = 1.0
+    private var pX = 0.05
+    private var pY = 0.05
+    private var pZ = 0.05
+    private var pVx = 0.5
+    private var pVy = 0.5
+    private var pVz = 0.5
 
     private var isInitialized = false
     private var consecutiveLargeInnovations = 0
@@ -35,6 +35,9 @@ class ArKalmanFilter3D(
     fun reset() {
         isInitialized = false
         consecutiveLargeInnovations = 0
+        lastInnovDirX = 0.0
+        lastInnovDirY = 0.0
+        lastInnovDirZ = 0.0
     }
 
     fun update(measurement: Point3D, dt: Float = 0.016f): Point3D {
@@ -45,13 +48,16 @@ class ArKalmanFilter3D(
             vx = 0.0
             vy = 0.0
             vz = 0.0
-            pX = 0.05
-            pY = 0.05
-            pZ = 0.05
-            pVx = 1.0
-            pVy = 1.0
-            pVz = 1.0
+            pX = 0.02
+            pY = 0.02
+            pZ = 0.02
+            pVx = 0.5
+            pVy = 0.5
+            pVz = 0.5
             consecutiveLargeInnovations = 0
+            lastInnovDirX = 0.0
+            lastInnovDirY = 0.0
+            lastInnovDirZ = 0.0
             isInitialized = true
             return measurement
         }
@@ -75,39 +81,47 @@ class ArKalmanFilter3D(
         pVy = (pVy + scaledQ).coerceIn(0.01, 2.0)
         pVz = (pVz + scaledQ).coerceIn(0.01, 2.0)
 
-        // Adaptive measurement noise based on innovation (distance between prediction and measurement)
+        // Directional innovation gating: damp isolated single-frame depth/hit spikes,
+        // while confirming consistent multi-frame pans for fast convergence.
         val dx = measurement.x - predX
         val dy = measurement.y - predY
         val dz = measurement.z - predZ
         val innovationDist = sqrt(dx * dx + dy * dy + dz * dz)
 
-        val isConsistentDirection = if (innovationDist > 0.04) {
-            val dot = dx * lastInnovDirX + dy * lastInnovDirY + dz * lastInnovDirZ
-            dot > 0.0
-        } else {
-            false
-        }
+        val adaptiveR = if (innovationDist > 0.06) {
+            val invDist = 1.0 / innovationDist
+            val dirX = dx * invDist
+            val dirY = dy * invDist
+            val dirZ = dz * invDist
+            val dot = dirX * lastInnovDirX + dirY * lastInnovDirY + dirZ * lastInnovDirZ
 
-        if (innovationDist > 0.04) {
-            consecutiveLargeInnovations = if (isConsistentDirection || consecutiveLargeInnovations == 0) {
-                consecutiveLargeInnovations + 1
+            if (consecutiveLargeInnovations == 0 || dot < 0.5) {
+                consecutiveLargeInnovations = 1
+                lastInnovDirX = dirX
+                lastInnovDirY = dirY
+                lastInnovDirZ = dirZ
+                measurementNoise * 20.0 // Heavy outlier damping on unconfirmed jump
             } else {
-                1
+                consecutiveLargeInnovations++
+                lastInnovDirX = dirX
+                lastInnovDirY = dirY
+                lastInnovDirZ = dirZ
+                if (consecutiveLargeInnovations >= 2) {
+                    pX = maxOf(pX, 0.03)
+                    pY = maxOf(pY, 0.03)
+                    pZ = maxOf(pZ, 0.03)
+                    measurementNoise * 0.20 // Confirmed sustained motion: track immediately
+                } else {
+                    measurementNoise * 20.0
+                }
             }
-            lastInnovDirX = dx
-            lastInnovDirY = dy
-            lastInnovDirZ = dz
         } else {
             consecutiveLargeInnovations = 0
-        }
-
-        // Rapid movement vs single-frame depth glitch detection:
-        // - Isolated > 12cm jump on a single frame is damped (outlier rejection)
-        // - Sustained rapid motion (or 4..12cm pan) adapts down measurement noise for minimal lag
-        val adaptiveR = when {
-            innovationDist > 0.12 && consecutiveLargeInnovations < 2 -> measurementNoise * 3.5
-            innovationDist > 0.04 -> measurementNoise * 0.10
-            else -> measurementNoise * (0.6 + innovationDist * 8.0)
+            if (innovationDist > 0.02) {
+                measurementNoise * 0.40
+            } else {
+                measurementNoise * 0.90
+            }
         }
 
         // 2. Update step (Kalman gain for position and cross-covariance gain for velocity)

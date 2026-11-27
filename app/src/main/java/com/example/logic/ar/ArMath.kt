@@ -1453,4 +1453,465 @@ object ArMath {
         }
         return result
     }
+
+    /**
+     * Computes absolute cosine of incidence angle between a unit ray direction
+     * and a surface normal vector, clamped to `[0f, 1f]`.
+     */
+    fun computeIncidenceCosine(
+        rayDirX: Double,
+        rayDirY: Double,
+        rayDirZ: Double,
+        normalX: Double,
+        normalY: Double,
+        normalZ: Double
+    ): Float {
+        val rLen = sqrt(rayDirX * rayDirX + rayDirY * rayDirY + rayDirZ * rayDirZ)
+        val nLen = sqrt(normalX * normalX + normalY * normalY + normalZ * normalZ)
+        if (!rLen.isFinite() || !nLen.isFinite() || rLen < 1e-6 || nLen < 1e-6) return 1.0f
+        val dot = abs(
+            (rayDirX / rLen) * (normalX / nLen) +
+                (rayDirY / rLen) * (normalY / nLen) +
+                (rayDirZ / rLen) * (normalZ / nLen)
+        )
+        return if (dot.isFinite()) dot.coerceIn(0.0, 1.0).toFloat() else 1.0f
+    }
+
+    /**
+     * Computes exact closed-loop calibration factor `k = referenceMeters / rawMeasuredMeters`.
+     * Returns `Double.NaN` if either input is non-finite or below 5 mm physical minimum.
+     */
+    fun computeCalibratedScaleFactor(referenceMeters: Double, rawMeasuredMeters: Double): Double {
+        if (!referenceMeters.isFinite() || !rawMeasuredMeters.isFinite()) return Double.NaN
+        if (referenceMeters <= 0.005 || rawMeasuredMeters <= 0.005) return Double.NaN
+        return referenceMeters / rawMeasuredMeters
+    }
+
+    /**
+     * Zero-allocation confidence-weighted RANSAC + Total Least Squares (3x3 Jacobi eigensolver)
+     * local tangent plane fitting over unprojected 3D Raw Depth ROI points, followed by exact
+     * center optical ray intersection and range consistency gating.
+     *
+     * Writes `[nx, ny, nz, px, py, pz, inlierWeightRatio]` into [outPlane7]
+     * and `[hitX, hitY, hitZ, rayT]` into [outHitXYZT].
+     */
+    fun fitConfidenceWeightedLocalPlane(
+        xs: DoubleArray,
+        ys: DoubleArray,
+        zs: DoubleArray,
+        weights: DoubleArray,
+        count: Int,
+        rayOriginX: Double,
+        rayOriginY: Double,
+        rayOriginZ: Double,
+        rayDirX: Double,
+        rayDirY: Double,
+        rayDirZ: Double,
+        inlierDistThreshold: Double = 0.025,
+        minCosIncidence: Double = 0.22,
+        minT: Double = 0.10,
+        maxT: Double = 8.0,
+        outPlane7: DoubleArray,
+        outHitXYZT: DoubleArray
+    ): Boolean {
+        if (count < 4 ||
+            count > xs.size || count > ys.size || count > zs.size || count > weights.size ||
+            outPlane7.size < 7 || outHitXYZT.size < 4
+        ) {
+            return false
+        }
+        val rLen = sqrt(rayDirX * rayDirX + rayDirY * rayDirY + rayDirZ * rayDirZ)
+        if (!rLen.isFinite() || rLen < 1e-6) return false
+        val rdx = rayDirX / rLen
+        val rdy = rayDirY / rLen
+        val rdz = rayDirZ / rLen
+
+        var totalWeight = 0.0
+        for (i in 0 until count) {
+            val w = weights[i]
+            if (!xs[i].isFinite() || !ys[i].isFinite() || !zs[i].isFinite() || !w.isFinite() || w < 0.0) {
+                return false
+            }
+            totalWeight += w
+        }
+        if (totalWeight <= 1e-6) return false
+
+        val thresh = inlierDistThreshold.coerceIn(0.005, 0.25)
+        val invThreshSq = 1.0 / (thresh * thresh)
+        val stepI = (count / 6).coerceAtLeast(1)
+        val stepJ = (count / 7).coerceAtLeast(1)
+        val rawStepK = (count / 8).coerceAtLeast(1)
+        val stepK = if (count > 12 && rawStepK == stepJ) (rawStepK - 1).coerceAtLeast(1) else rawStepK
+
+        var bestScore = -1.0
+        var bestInliers = 0
+        var bestInlierW = 0.0
+        var bestNx = 0.0
+        var bestNy = 0.0
+        var bestNz = 0.0
+        var bestPx = 0.0
+        var bestPy = 0.0
+        var bestPz = 0.0
+
+        var i = 0
+        while (i < count - 2) {
+            val x1 = xs[i]; val y1 = ys[i]; val z1 = zs[i]
+            var j = i + 1
+            while (j < count - 1) {
+                val ax = xs[j] - x1
+                val ay = ys[j] - y1
+                val az = zs[j] - z1
+                if (ax * ax + ay * ay + az * az >= 0.000016) {
+                    var k = j + 1
+                    while (k < count) {
+                        val bx = xs[k] - x1
+                        val by = ys[k] - y1
+                        val bz = zs[k] - z1
+                        val cnx = ay * bz - az * by
+                        val cny = az * bx - ax * bz
+                        val cnz = ax * by - ay * bx
+                        val cnLen = sqrt(cnx * cnx + cny * cny + cnz * cnz)
+                        if (cnLen > 1e-5) {
+                            val ux = cnx / cnLen
+                            val uy = cny / cnLen
+                            val uz = cnz / cnLen
+                            val cosInc = abs(ux * rdx + uy * rdy + uz * rdz)
+                            if (cosInc >= minCosIncidence * 0.70) {
+                                var score = 0.0
+                                var inliers = 0
+                                var inlierW = 0.0
+                                for (m in 0 until count) {
+                                    val w = weights[m]
+                                    if (w <= 0.0) continue
+                                    val dist = abs((xs[m] - x1) * ux + (ys[m] - y1) * uy + (zs[m] - z1) * uz)
+                                    if (dist <= thresh) {
+                                        inliers++
+                                        inlierW += w
+                                        score += w * (1.0 - (dist * dist * invThreshSq))
+                                    }
+                                }
+                                if (inliers >= 4 && score > bestScore) {
+                                    bestScore = score
+                                    bestInliers = inliers
+                                    bestInlierW = inlierW
+                                    bestNx = ux; bestNy = uy; bestNz = uz
+                                    bestPx = x1; bestPy = y1; bestPz = z1
+                                }
+                            }
+                        }
+                        k += stepK
+                    }
+                }
+                j += stepJ
+            }
+            i += stepI
+        }
+
+        if (bestInliers < 4 || (bestInlierW / totalWeight) < 0.45) {
+            return false
+        }
+
+        // Compute weighted centroid over RANSAC inliers
+        var sumW = 0.0
+        var cx = 0.0
+        var cy = 0.0
+        var cz = 0.0
+        for (m in 0 until count) {
+            val w = weights[m]
+            if (w <= 0.0) continue
+            val dist = abs((xs[m] - bestPx) * bestNx + (ys[m] - bestPy) * bestNy + (zs[m] - bestPz) * bestNz)
+            if (dist <= thresh) {
+                sumW += w
+                cx += w * xs[m]
+                cy += w * ys[m]
+                cz += w * zs[m]
+            }
+        }
+        if (sumW <= 1e-6) return false
+        cx /= sumW
+        cy /= sumW
+        cz /= sumW
+
+        // Weighted 3x3 covariance matrix for Total Least Squares (scalar Jacobi eigensolver)
+        var a00 = 0.0; var a01 = 0.0; var a02 = 0.0
+        var a11 = 0.0; var a12 = 0.0; var a22 = 0.0
+        for (m in 0 until count) {
+            val w = weights[m]
+            if (w <= 0.0) continue
+            val dist = abs((xs[m] - bestPx) * bestNx + (ys[m] - bestPy) * bestNy + (zs[m] - bestPz) * bestNz)
+            if (dist <= thresh) {
+                val dx = xs[m] - cx
+                val dy = ys[m] - cy
+                val dz = zs[m] - cz
+                a00 += w * dx * dx
+                a01 += w * dx * dy
+                a02 += w * dx * dz
+                a11 += w * dy * dy
+                a12 += w * dy * dz
+                a22 += w * dz * dz
+            }
+        }
+
+        var v00 = 1.0; var v01 = 0.0; var v02 = 0.0
+        var v10 = 0.0; var v11 = 1.0; var v12 = 0.0
+        var v20 = 0.0; var v21 = 0.0; var v22 = 1.0
+
+        for (sweep in 0 until 12) {
+            val abs01 = abs(a01); val abs02 = abs(a02); val abs12 = abs(a12)
+            if (abs01 <= 1e-12 && abs02 <= 1e-12 && abs12 <= 1e-12) break
+
+            if (abs01 > 1e-12) {
+                val tau = (a11 - a00) / (2.0 * a01)
+                val t = if (tau >= 0.0) 1.0 / (tau + sqrt(1.0 + tau * tau)) else -1.0 / (-tau + sqrt(1.0 + tau * tau))
+                val c = 1.0 / sqrt(1.0 + t * t)
+                val s = t * c
+                val na00 = c * c * a00 - 2.0 * s * c * a01 + s * s * a11
+                val na11 = s * s * a00 + 2.0 * s * c * a01 + c * c * a11
+                val na02 = c * a02 - s * a12
+                val na12 = s * a02 + c * a12
+                a00 = na00; a11 = na11; a01 = 0.0; a02 = na02; a12 = na12
+                val nv00 = c * v00 - s * v01; val nv01 = s * v00 + c * v01
+                val nv10 = c * v10 - s * v11; val nv11 = s * v10 + c * v11
+                val nv20 = c * v20 - s * v21; val nv21 = s * v20 + c * v21
+                v00 = nv00; v01 = nv01; v10 = nv10; v11 = nv11; v20 = nv20; v21 = nv21
+            }
+            if (abs(a02) > 1e-12) {
+                val tau = (a22 - a00) / (2.0 * a02)
+                val t = if (tau >= 0.0) 1.0 / (tau + sqrt(1.0 + tau * tau)) else -1.0 / (-tau + sqrt(1.0 + tau * tau))
+                val c = 1.0 / sqrt(1.0 + t * t)
+                val s = t * c
+                val na00 = c * c * a00 - 2.0 * s * c * a02 + s * s * a22
+                val na22 = s * s * a00 + 2.0 * s * c * a02 + c * c * a22
+                val na01 = c * a01 - s * a12
+                val na12 = s * a01 + c * a12
+                a00 = na00; a22 = na22; a02 = 0.0; a01 = na01; a12 = na12
+                val nv00 = c * v00 - s * v02; val nv02 = s * v00 + c * v02
+                val nv10 = c * v10 - s * v12; val nv12 = s * v10 + c * v12
+                val nv20 = c * v20 - s * v22; val nv22 = s * v20 + c * v22
+                v00 = nv00; v02 = nv02; v10 = nv10; v12 = nv12; v20 = nv20; v22 = nv22
+            }
+            if (abs(a12) > 1e-12) {
+                val tau = (a22 - a11) / (2.0 * a12)
+                val t = if (tau >= 0.0) 1.0 / (tau + sqrt(1.0 + tau * tau)) else -1.0 / (-tau + sqrt(1.0 + tau * tau))
+                val c = 1.0 / sqrt(1.0 + t * t)
+                val s = t * c
+                val na11 = c * c * a11 - 2.0 * s * c * a12 + s * s * a22
+                val na22 = s * s * a11 + 2.0 * s * c * a12 + c * c * a22
+                val na01 = c * a01 - s * a02
+                val na02 = s * a01 + c * a02
+                a11 = na11; a22 = na22; a12 = 0.0; a01 = na01; a02 = na02
+                val nv01 = c * v01 - s * v02; val nv02 = s * v01 + c * v02
+                val nv11 = c * v11 - s * v12; val nv12 = s * v11 + c * v12
+                val nv21 = c * v21 - s * v22; val nv22 = s * v21 + c * v22
+                v01 = nv01; v02 = nv02; v11 = nv11; v12 = nv12; v21 = nv21; v22 = nv22
+            }
+        }
+
+        // Eigenvector with smallest eigenvalue = TLS surface normal
+        var fnx: Double
+        var fny: Double
+        var fnz: Double
+        if (a00 <= a11 && a00 <= a22) {
+            fnx = v00; fny = v10; fnz = v20
+        } else if (a11 <= a00 && a11 <= a22) {
+            fnx = v01; fny = v11; fnz = v21
+        } else {
+            fnx = v02; fny = v12; fnz = v22
+        }
+
+        val fLen = sqrt(fnx * fnx + fny * fny + fnz * fnz)
+        if (!fLen.isFinite() || fLen < 1e-6) {
+            fnx = bestNx; fny = bestNy; fnz = bestNz
+        } else {
+            fnx /= fLen; fny /= fLen; fnz /= fLen
+            if (abs(fnx * bestNx + fny * bestNy + fnz * bestNz) < 0.90) {
+                fnx = bestNx; fny = bestNy; fnz = bestNz
+            }
+        }
+
+        // Orient normal toward camera
+        if (fnx * (-rdx) + fny * (-rdy) + fnz * (-rdz) < 0.0) {
+            fnx = -fnx; fny = -fny; fnz = -fnz
+        }
+
+        // Compute weighted mean inlier range & verify inlier ratio against refined plane
+        var finalInlierW = 0.0
+        var meanRange = 0.0
+        for (m in 0 until count) {
+            val w = weights[m]
+            if (w <= 0.0) continue
+            val dist = abs((xs[m] - cx) * fnx + (ys[m] - cy) * fny + (zs[m] - cz) * fnz)
+            if (dist <= thresh) {
+                val rDx = xs[m] - rayOriginX
+                val rDy = ys[m] - rayOriginY
+                val rDz = zs[m] - rayOriginZ
+                val rng = sqrt(rDx * rDx + rDy * rDy + rDz * rDz)
+                finalInlierW += w
+                meanRange += w * rng
+            }
+        }
+        val inlierRatio = finalInlierW / totalWeight
+        if (inlierRatio < 0.45 || finalInlierW <= 1e-6) return false
+        meanRange /= finalInlierW
+
+        // Intersect center optical ray with refined local tangent plane
+        if (!rayPlaneIntersection(
+                rayOriginX = rayOriginX,
+                rayOriginY = rayOriginY,
+                rayOriginZ = rayOriginZ,
+                rayDirX = rdx,
+                rayDirY = rdy,
+                rayDirZ = rdz,
+                planePointX = cx,
+                planePointY = cy,
+                planePointZ = cz,
+                planeNormalX = fnx,
+                planeNormalY = fny,
+                planeNormalZ = fnz,
+                minCosIncidence = minCosIncidence,
+                minT = minT,
+                maxT = maxT,
+                outHitXYZT = outHitXYZT
+            )
+        ) {
+            return false
+        }
+
+        // Reject wild oblique extrapolations whose range diverges from the inlier patch
+        if (abs(outHitXYZT[3] - meanRange) > 0.15 * meanRange + 0.08) {
+            return false
+        }
+
+        outPlane7[0] = fnx
+        outPlane7[1] = fny
+        outPlane7[2] = fnz
+        outPlane7[3] = cx
+        outPlane7[4] = cy
+        outPlane7[5] = cz
+        outPlane7[6] = inlierRatio.coerceIn(0.0, 1.0)
+        return true
+    }
+
+    /**
+     * Zero-allocation Y-plane 3x3 Sobel ROI edge finder with sub-pixel parabolic refinement.
+     * Searches a ±[searchRadiusPx] image-pixel neighborhood around ([centerX], [centerY]).
+     * Returns 0f (and writes [centerX], [centerY]) when gradient magnitude is below
+     * [minGradientThreshold], ensuring blank white walls never produce false edge snaps.
+     */
+    fun findStrongestLocalEdgeXY(
+        luma: java.nio.ByteBuffer,
+        width: Int,
+        height: Int,
+        rowStride: Int,
+        pixelStride: Int,
+        centerX: Float,
+        centerY: Float,
+        searchRadiusPx: Int = 14,
+        minGradientThreshold: Float = 42f,
+        outBestXY: FloatArray
+    ): Float {
+        if (outBestXY.size < 2 || !centerX.isFinite() || !centerY.isFinite()) return 0f
+        if (width < 8 || height < 8 || pixelStride < 1 || rowStride < width) {
+            outBestXY[0] = centerX
+            outBestXY[1] = centerY
+            return 0f
+        }
+        val limit = luma.limit()
+        val maxRequiredOffset = (height - 1) * rowStride + (width - 1) * pixelStride
+        if (maxRequiredOffset >= limit) {
+            outBestXY[0] = centerX
+            outBestXY[1] = centerY
+            return 0f
+        }
+
+        val cx = centerX.roundToInt().coerceIn(1, width - 2)
+        val cy = centerY.roundToInt().coerceIn(1, height - 2)
+        val r = searchRadiusPx.coerceIn(2, 32)
+        val x0 = (cx - r).coerceAtLeast(1)
+        val x1 = (cx + r).coerceAtMost(width - 2)
+        val y0 = (cy - r).coerceAtLeast(1)
+        val y1 = (cy + r).coerceAtMost(height - 2)
+        if (x0 > x1 || y0 > y1) {
+            outBestXY[0] = centerX
+            outBestXY[1] = centerY
+            return 0f
+        }
+
+        fun sobelMagAt(px: Int, py: Int): Float {
+            val rPrev = (py - 1) * rowStride
+            val rCurr = py * rowStride
+            val rNext = (py + 1) * rowStride
+            val cPrev = (px - 1) * pixelStride
+            val cCurr = px * pixelStride
+            val cNext = (px + 1) * pixelStride
+
+            val p00 = luma.get(rPrev + cPrev).toInt() and 0xFF
+            val p10 = luma.get(rPrev + cCurr).toInt() and 0xFF
+            val p20 = luma.get(rPrev + cNext).toInt() and 0xFF
+            val p01 = luma.get(rCurr + cPrev).toInt() and 0xFF
+            val p21 = luma.get(rCurr + cNext).toInt() and 0xFF
+            val p02 = luma.get(rNext + cPrev).toInt() and 0xFF
+            val p12 = luma.get(rNext + cCurr).toInt() and 0xFF
+            val p22 = luma.get(rNext + cNext).toInt() and 0xFF
+
+            val gx = (-p00 + p20) + ((-p01 + p21) shl 1) + (-p02 + p22)
+            val gy = (-p00 - (p10 shl 1) - p20) + (p02 + (p12 shl 1) + p22)
+            return sqrt((gx * gx + gy * gy).toFloat()) * 0.25f
+        }
+
+        val maxR2 = (r * r).toFloat().coerceAtLeast(1f)
+        var bestScore = -1f
+        var bestMag = 0f
+        var bestPx = cx
+        var bestPy = cy
+
+        for (py in y0..y1) {
+            val dy = py - cy
+            val dy2 = (dy * dy).toFloat()
+            for (px in x0..x1) {
+                val dx = px - cx
+                val mag = sobelMagAt(px, py)
+                val distPenalty = 1f - 0.12f * ((dx * dx).toFloat() + dy2) / maxR2
+                val score = mag * distPenalty
+                if (score > bestScore) {
+                    bestScore = score
+                    bestMag = mag
+                    bestPx = px
+                    bestPy = py
+                }
+            }
+        }
+
+        if (bestMag < minGradientThreshold) {
+            outBestXY[0] = centerX
+            outBestXY[1] = centerY
+            return 0f
+        }
+
+        var offX = 0f
+        if (bestPx in 2..(width - 3)) {
+            val gL = sobelMagAt(bestPx - 1, bestPy)
+            val gC = bestMag
+            val gR = sobelMagAt(bestPx + 1, bestPy)
+            val denom = gL - 2f * gC + gR
+            if (denom < -1e-3f) {
+                offX = (0.5f * (gL - gR) / denom).coerceIn(-0.5f, 0.5f)
+            }
+        }
+        var offY = 0f
+        if (bestPy in 2..(height - 3)) {
+            val gU = sobelMagAt(bestPx, bestPy - 1)
+            val gC = bestMag
+            val gD = sobelMagAt(bestPx, bestPy + 1)
+            val denom = gU - 2f * gC + gD
+            if (denom < -1e-3f) {
+                offY = (0.5f * (gU - gD) / denom).coerceIn(-0.5f, 0.5f)
+            }
+        }
+
+        outBestXY[0] = (bestPx + offX).coerceIn(1f, (width - 2).toFloat())
+        outBestXY[1] = (bestPy + offY).coerceIn(1f, (height - 2).toFloat())
+        return bestMag
+    }
 }
+
